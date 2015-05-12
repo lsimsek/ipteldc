@@ -1,3 +1,0 @@
-# This file defines the ubuild "setup_projects" that a designer can select.
-#
-common ${USE_SRC_ROOT}/ebuild/ipteldc/ipteldc/trunk/tools/build "Standard project for building."

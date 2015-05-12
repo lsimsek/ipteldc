@@ -1,5 +1,0 @@
-test 0 = 0 && test "$?0" = "00" && test  "$?USE_SRC_ROOT" != "0"  && export  USE_SRC_ROOT=""
-test 0 = 0 && test "$?0" != "00" && test  "$?USE_SRC_ROOT" = "0"  && setenv USE_SRC_ROOT ""
-eval `/opt/tools/wh/dtd/tools/ubuild/1.11/ubuild_setup.pl $0 $USE_SRC_ROOT/ebuild/ipteldc/ipteldc/trunk/tools/build/setup.config $*`
-eval `/ebuild/ipteldc/ipteldc/trunk/tools/pkgtools/bin/export_ubuild_env_vars $0`
-

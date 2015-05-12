@@ -1,7 +1,0 @@
-#
-# This file lists the tools that should be imported from the tools warehouse.
-# Since the underlying NTMK will do its own toolsetups all we need do here is
-# support ubuild itself.
-#
-perl   5.8.0
-ntmk   3.20.4.genband

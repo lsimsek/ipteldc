@@ -1,0 +1,373 @@
+#!/usr/bin/env perl
+#
+# The createTars utility is called once all families and targets being built
+# have completed the createNcls step. It rolls up the NCL directories into
+# tarballs.
+#
+# For application layers, it also rolls up the NCLs into patches, for easy
+# installation by design during testing.
+#
+# For the VSE layer, this utility will handle creation of the Data Manager
+# tarballs, containing a bootable image.
+#
+use warnings "all";
+use strict;
+
+#
+# Globals
+#
+use vars qw (
+    $buildEsd
+    $dmTarfiles
+    $makeDmTarfile
+    $makePatches
+    $mergepatch
+    $nclDir
+    $nclmapFile
+    $patches
+    $pkgtoolDir
+    $pkgtoolVersion
+    $tarfiles
+    $tmpdir
+    %nclmap
+    %ncls
+);
+
+# pkgtoolVersion must be aligned with the other pkgtools
+$pkgtoolVersion = "8.0.3";
+
+$makePatches = 0;
+$makeDmTarfile = 0;
+
+if (!defined $ENV{ntmkbw_PRODUCTID})
+{
+    die "The ntmkbw_PRODUCTID must be set\n";
+}
+
+if ($ENV{ntmkbw_PRODUCTID} eq "Siren")
+{
+    if (!defined $ENV{TOPDIR})
+    {
+        die "The TOPDIR must be set\n";
+    }
+
+    $pkgtoolDir = "$ENV{TOPDIR}/tools/pkgtools";
+    $makeDmTarfile = 1;
+    $buildEsd = "$pkgtoolDir/utils/buildEsd";
+}
+else
+{
+    $pkgtoolDir = (defined $ENV{pkgtoolPATH})
+                      ? $ENV{pkgtoolPATH}
+                      : "$ENV{USE_SRC_ROOT}/vobs/lsba_platform_tools/pkgtool";
+    $makePatches = 1;
+    $mergepatch = "$pkgtoolDir/bin/mergepatch";
+    $buildEsd = "$pkgtoolDir/bin/buildEsd";
+
+    if ($ENV{PKG_VER} eq "")
+    {
+        die "The PKG_VER environment variable must be set\n";
+    }
+}
+
+die "Cannot execute $buildEsd" if (! -x $buildEsd);
+
+require "$pkgtoolDir/config/pkgutils.pm";
+
+chomp ($tmpdir = `mktemp -d -p /tmp createTars.XXXXXX`);
+if (! -d $tmpdir)
+{
+    die "Unable to create working directory.\n";
+}
+
+#
+# The "END" is a special sub-routine that allows us to do some special handling
+# when the script exits. This is called when either exit or die are called,
+# and gives us a single place where we can clean up the temporary directory.
+# This is analogous to doing a "trap on exit" in bash.
+#
+END
+{
+    my $rc = $?;
+
+    if (-d $tmpdir)
+    {
+        #print "Cleaning up working directory: $tmpdir.\n";
+        `rm -rf $tmpdir`;
+    }
+
+    $? = $rc;
+}
+
+# Catch interrupts.
+# This will result in "die" being called, which in turn will call "END" above.
+use sigtrap qw(die normal-signals);
+
+# Functions
+sub parseDmMap(\%)
+{
+    my $dmmap = shift;
+
+    my $mapfile = "$pkgtoolDir/config/datamanagerMap.list";
+
+    open DMMAP, $mapfile or die "Failed to open file: $mapfile";
+
+    my $lineno = 0;
+    while ( my $line = <DMMAP> )
+    {
+        $lineno++;
+
+        chomp $line;
+
+        $line =~ s/#.*//;  # Strip comments
+        $line =~ s/\s+$//; # Strip trailing space
+
+        if ($line !~ /./)
+        {
+            # Blank line
+            next;
+         }
+
+         # Check for whitespace
+         if ($line =~ /\s/)
+         {
+            die "Syntax error on line $lineno of $mapfile: no whitespace allowed\n";
+         }
+
+         # Get the fields from one line.
+         my ($name, $family, $target, $role, $pec, $nclList, $eidUnit0, $eidUnit1, $loadtype, @extra)  = split /;/, $line;
+
+         # Make sure the line has data in each field.
+         if ($name eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing name\n";
+         }
+
+         if ($family eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing family\n";
+         }
+
+         if ($target eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing target\n";
+         }
+
+         if ($role eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing role\n";
+         }
+
+         if ($pec eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing pec\n";
+         }
+
+         if ($nclList eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing NCL list\n";
+         }
+
+         if ($eidUnit0 eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing EID Unit0\n";
+         }
+
+         if ($eidUnit1 eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing EID Unit1\n";
+         }
+
+         if ($loadtype eq "")
+         {
+            die "Syntax error on line $lineno of $mapfile: missing loadtype\n";
+         }
+
+         $name .= $ENV{USE_NCLVERSION};
+         my @nclList = split /,/, $nclList;
+         map(s/$/$ENV{USE_NCLVERSION}/, @nclList);
+
+         $$dmmap{$name}{family} = $family;
+         $$dmmap{$name}{target} = $target;
+         $$dmmap{$name}{role} = $role;
+         $$dmmap{$name}{pec} = $pec;
+         @{$$dmmap{$name}{NCLS}} = @nclList;
+         $$dmmap{$name}{eidUnit0} = $eidUnit0;
+         $$dmmap{$name}{eidUnit1} = $eidUnit1;
+         $$dmmap{$name}{loadtype} = $loadtype;
+    }
+
+    close DMMAP;
+}
+
+#
+# Initialize globals
+#
+
+print "\nUsing createTars version $pkgtoolVersion.\n\n";
+
+if (!$ENV{OBJPATH})
+{
+    die "Error: OBJPATH environment variable is not set\n";
+}
+
+if (! -d $ENV{OBJPATH})
+{
+    die "Error: OBJPATH directory does not exist: $ENV{OBJPATH}\n";
+}
+
+$nclDir = "$ENV{OBJPATH}/ncl";
+$tarfiles = "$nclDir/tarfiles";
+$patches = "$nclDir/patches";
+$dmTarfiles = "$nclDir/dmtarfiles";
+
+#
+# Read the configuration files
+# 
+
+$nclmapFile = $ENV{USE_NCLMAPFILE};
+%nclmap = ();
+%ncls = ();
+
+if (parseNclMapping($nclmapFile, \%nclmap) != 0)
+{
+    die "Failed to parse $nclmapFile";
+}
+
+#
+# Get the complete list of possible NCLs
+#
+for my $family (keys %nclmap)
+{
+    for my $target (keys %{$nclmap{$family}})
+    {
+        for my $role (keys %{$nclmap{$family}{$target}})
+        {
+            for my $ncl (@{$nclmap{$family}{$target}{$role}})
+            {
+                if (-d "$nclDir/$ncl")
+                {
+                    $ncls{$ncl}++;
+                }
+            }
+        }
+    }
+}
+
+if (scalar keys %ncls == 0)
+{
+    die "Unable to find NCL directories in $nclDir\n";
+}
+
+if (! -d $tarfiles)
+{
+    mkdir $tarfiles or die "Failed to create $tarfiles: $!";
+}
+
+if ($makePatches && ! -d $patches)
+{
+    mkdir $patches or die "Failed to create $patches: $!";
+}
+
+if ($makeDmTarfile && ! -d $dmTarfiles)
+{
+    mkdir $dmTarfiles or die "Failed to create $dmTarfiles: $!";
+}
+
+for my $ncl (sort keys %ncls)
+{
+    my $rootDir = "$nclDir/$ncl";
+    my $command = "tar -czf $tarfiles/$ncl.tgz -C $rootDir .";
+    print "Creating $ncl.tgz...";
+    system ($command) == 0
+        or die qq(ERROR: In command: $command:  $!);
+    print "Done.\n";
+
+    if ($makePatches)
+    {
+        my $parcelList = `mktemp`;
+        chomp $parcelList;
+
+        `find $rootDir -type f -name '*.parcel' > $parcelList`;
+        my $patchId = $ncl . "_" . uc($ENV{PKG_VER});
+
+        print "Rolling up $ncl into $patchId.patch\n";
+
+        system ("$mergepatch -l -p $patchId -f $parcelList -o $patches") == 0
+            or die "Error: Failed to create patch.\n";
+
+        unlink $parcelList;
+    }
+# Should we delete the ncl dir? This was done previously in Siren, but not in apps
+#        $command = qq(rm -rf $opts{o}/$ncl);
+#        system ($command) and die qq(ERROR: In command: $command:  $!);
+
+}
+
+if ($makeDmTarfile)
+{
+    print "Creating Data Manager tarfiles...\n";
+
+    my %dmmap = ();
+    &parseDmMap(\%dmmap);
+
+    my @toBuild = ();
+
+    for my $name (sort keys %dmmap)
+    {
+        # Check to see that we have all necessary NCLs
+        my @missing = ();
+        for my $ncl (sort @{$dmmap{$name}{NCLS}})
+        {
+            if (! -d "$nclDir/$ncl")
+            {
+                push @missing, $ncl;
+            }
+        }
+
+        if (scalar @missing == 0)
+        {
+            push @toBuild, $name;
+        }
+        else
+        {
+            # This is not a fatal error.
+            print "Warning: Unable to build $name dmtarfile. Missing NCLs:\n";
+            print "\t", (join ", ", @missing), "\n\n";
+        }
+    }
+
+    for my $name (@toBuild)
+    {
+        print "Building $name extracted Data Manager image...\n";
+
+        my $family = $dmmap{$name}{family};
+        my $target = $dmmap{$name}{target};
+        my $role = $dmmap{$name}{role};
+        my $pec = $dmmap{$name}{pec};
+        my $nclList = join ",", @{$dmmap{$name}{NCLS}};
+        my $eidUnit0 = $dmmap{$name}{eidUnit0};
+        my $eidUnit1 = $dmmap{$name}{eidUnit1};
+        my $loadtype = $dmmap{$name}{loadtype};
+
+        my $builddir = "$tmpdir/$family";
+        mkdir $builddir;
+        die "Failed to create $builddir" if (! -d $builddir);
+
+        # Setup isolinux structure and create tar ball
+        my $fakeRoot = "ivt fakeroot 1.2.3 fakeroot";
+        my $command = qq(cd $ENV{TOPDIR}/tools/pkgtools/utils && $fakeRoot -- ./setupTyphoonBootImage --ncldir $nclDir --ncls $nclList --rootdir $builddir --family $family --target $target --role $role --pec $pec --eidUnit0  $eidUnit0 --eidUnit1  $eidUnit1 --loadtype $loadtype --output $dmTarfiles/$name.tgz);
+
+        system ($command) == 0
+            or die qq(ERROR: In command: $command:  $!);
+
+        print "Created $name.tgz...";
+        print "Done.\n";
+
+        `rm -rf $builddir`;
+    }
+}
+
+# Switch execution to buildEsd with exec, so we don't lose stdout.
+exec($buildEsd, "-l", "all");
+

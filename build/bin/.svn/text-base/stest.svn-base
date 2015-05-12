@@ -1,0 +1,232 @@
+#!/bin/sh
+#set -x
+
+echo "ERROR: 'stest' is now obsolete. Please use 'utest' instead."
+exit 1;
+
+OPTSTR="ira:k:n:t:o:x:p:v:y:"
+
+usage()
+{
+    echo "stest usage"
+    echo '   stest [-r] [-i] [-a arch1,arch2,...] [-x sysroot_location] [-p tmp_dir] [-t target] [-o "option option ..."] [-v iso_file_name] [-k package]'
+    echo '    -i  Use this if you want to ignore the clobberall message and'
+    echo '        perform an incremental build using your existing build output.'
+    echo '    -r  Use rsbuild as the build command.  Will send each build as a'
+    echo '        separate job to the LBU.'
+    echo '    -a  *architectures*'
+    echo '        List of architectures can be space, comma or colon separated.'
+    echo '    -k  *package name*'
+    echo '        stest will search the packageMapping.list file and only build targets'
+    echo '        that use the specified package.'
+    echo '    -t  *build target*'
+    echo '    -n  *num*'
+    echo '        How many architecture builds we start in parallel'
+    echo '    -o  *options*'
+    echo '        Options to be passed to sbuild'
+    echo '    -x  *sysroot location*'
+    echo '        Where to place your build output.  Passed as NCGL_SYSTEM_ROOT to sbuild'
+    echo '    -y  *previous sysroot location*'
+    echo '        Your previous layer sysroot location.  Passed as PRVL_PKGS_IN_DIR'
+    echo '        to sbuild.'
+    echo '    -p  *temp dir*'
+    echo '        Temporary directory used to create iso image.  Default /tmp'
+    echo '    -v  *iso file name"'
+    exit 0
+}                                                                                                                                
+MY_TMPDIR=/tmp/$$
+MY_ISOFILE=vse.iso
+declare -i slots=3
+
+while getopts $OPTSTR OPT
+do
+    case $OPT in
+    a) MY_ARCHS=$OPTARG ;;
+    i) IGNORE_CLOBBERALL="Y";;
+    r) REMOTE=1;STEST_BLDCMD="rsbuild";;
+    k) MY_PACKAGE=$OPTARG ;;
+    n) slots=$OPTARG ;;
+    o) BLDOPTS=$OPTARG ;;
+    p) MY_TMPDIR=$OPTARG ;;
+    t) BLDTARG=$OPTARG ;;
+    v) MY_ISOFILE=$OPTARG ;;
+    x) MY_SYSROOT=$OPTARG ;;
+    y) MY_PRVL=$OPTARG ;;
+    
+    *) usage ;;
+    esac
+done
+
+if [ -n "$MY_ARCHS" -a -n "$MY_PACKAGE" ]; then
+  echo "ERROR: The -a and -k options are mutually exclusive"
+  exit 1
+fi
+
+echo "$BLDTARG" | grep -e '^ *mk *$' -e ' mk ' -e ' mk$' -e '^ *mk ' > /dev/null
+if [ $? -eq 0 ]; then
+  echo "ERROR: 'mk' is not a valid target to be passed to stest."
+  echo "       'mk' is executed automatically before any other target you specify."
+  exit 1
+fi
+if [ "$BLDTARG" = "" ]; then
+    BLDTARG=test
+fi
+
+# We don't allow a test build w/o performing clobberall first
+if [ -z $IGNORE_CLOBBERALL ]; then
+    if [ -n "`ls -d ${OBJPATH}/_* 2>/dev/null `" ]; then
+      echo 
+      echo 'ERROR: You did not perform the "cloberall" target before this build.'
+      echo '       Please issue the command "sbuild clobberall" first.'
+      echo
+      echo "If you really know what you're doing and want to perform the build "
+      echo 'w/o performing clobberall, add the "-i" flag to the stest command.'
+      echo 
+      exit 1
+    fi
+fi
+
+# If we specified a package, this means that the build must be performed 
+# only for the appropriate targets for this package
+if [ -n "$MY_PACKAGE" ]; then
+  PACKAGE_MAPPING=${PACKAGE_MAPPING:=`dirname $0`/../pkgtools/config/packageMapping.list}
+  if [ ! -r "$PACKAGE_MAPPING" ]; then
+    echo "ERROR: $PACKAGE_MAPPING cannot be found or not readable"
+    exit 1
+  fi
+  SIREN_TARGETS=`grep :${MY_PACKAGE}: $PACKAGE_MAPPING | cut -d : -f 3 | sort -u | tr '\012' ' '`
+  if [ -z "$SIREN_TARGETS" ]; then
+    echo "ERROR: The package ${MY_PACKAGE} cannot be found in  $PACKAGE_MAPPING"
+    exit 1
+  fi
+fi
+
+if [ -n "$MY_ARCHS" ]; then
+  SIREN_TARGETS=`echo $MY_ARCHS | sed -e 's/[,:]/ /g'`
+fi
+
+if [ "$SIREN_TARGETS" = "" -o "$SIREN_TARGETS" = "common " ]; then 
+  SIREN_TARGETS="i686 i686d i686m ppc ppc10g ppc970 ppc970mp xscale_be mot_mips ge_mips i686u-mn 8548-mn x86_64"
+fi
+
+declare -i targets_number=`echo $SIREN_TARGETS | wc -w`
+if (( slots > targets_number )); then
+  slots=$targets_number
+fi
+
+if [ -z "$STEST_BLDCMD" ]; then
+  if [ "$ntmkbw_PRODUCTID" = "ha" ]; then
+    STEST_BLDCMD="habuild"
+  else
+    STEST_BLDCMD="sbuild"
+  fi
+fi
+
+echo; echo "Starting the test build for targets: $SIREN_TARGETS"
+echo; echo "Generating the mk files..."; echo
+rm -f .*.err .*.tgtbld
+
+#Manipulate the targets a little:
+BLDTARG=`echo $BLDTARG | sed -e 's/top/top_no_mk/' -e 's/test/test_no_mk/' -e 's/formal/formal_no_mk/' -e 's/mk //'`
+
+# First the mk phase of the build, common for all targets
+$STEST_BLDCMD $BLDOPTS do_mk 2>&1 | tee mk.log
+
+# Then build all architectures 
+# When we introduced local builds we realized that we cannot start all builds in parallel
+# This is why we introduced the idea that we build in "slots" builds
+# We have to introduce all these variables
+declare -i i=0  # index architectures
+declare -i j    # index slots
+declare -i cards_number=`echo $SIREN_TARGETS | wc -w` # total cards
+# If not local build on a w* machine
+uname -n | grep '^w.*' 1>/dev/null || slots=$cards_number
+if [ "$REMOTE" = "1" ]; then
+  slots=$cards_number
+fi
+
+# Prepare the build commands
+ARCHS_ARRAY=($SIREN_TARGETS)
+while (( i < cards_number )); do
+   # If I did specify a SYSROOT location, add it to the params passed to sbuild 
+    if [ -n "$MY_SYSROOT" ] ; then
+      NCGL_SYSTEM_ROOT=$MY_SYSROOT/Siren${ARCHS_ARRAY[i]}
+      BLDOPTS2="NCGL_SYSTEM_ROOT=$NCGL_SYSTEM_ROOT"
+      mkdir -p $NCGL_SYSTEM_ROOT
+    fi
+    if [ -n "$MY_PRVL" ] ; then
+      PRVL_PKGS_IN_DIR=$MY_PRVL/${ARCHS_ARRAY[i]}
+      BLDOPTS2="PRVL_PKGS_IN_DIR=$PRVL_PKGS_IN_DIR $BLDOPTS2"
+    fi
+    CMDS_ARRAY[i]="( $STEST_BLDCMD -a ${ARCHS_ARRAY[i]} $BLDOPTS $BLDOPTS2 ${BLDTARG} 2>&1 && rm -f .${ARCHS_ARRAY[i]}.tgtbld || touch .${ARCHS_ARRAY[i]}.err && rm -f .${ARCHS_ARRAY[i]}.tgtbld ) | tee ${ARCHS_ARRAY[i]}.log 1>/dev/null &"
+   (( i = i + 1 ))
+done
+# Start the commands on available slots
+i=0
+while ((i < slots)); do
+  SLOTS[i]=${ARCHS_ARRAY[i]}
+  echo Starting ${ARCHS_ARRAY[i]} build 
+  touch  .${ARCHS_ARRAY[i]}.tgtbld
+  eval ${CMDS_ARRAY[i]}
+  (( i = i + 1 ))
+done
+#Now wait for a command to finish. When it does, start a new one
+while true ; do
+  echo -n .
+  j=0
+  while ((j < slots)); do
+    if [ "${SLOTS[j]}" != "" ]; then 
+      if [ ! -f .${SLOTS[j]}.tgtbld ]; then
+        #This slot is done
+        if [ -f .${SLOTS[j]}.err ]; then
+          echo; echo "ERROR: Target ${SLOTS[j]} failed. See $TGT.log for more info."
+        fi
+        #Do we have more jobs?
+        if (( i < cards_number )); then
+          SLOTS[j]=${ARCHS_ARRAY[i]}
+          echo; echo Starting ${ARCHS_ARRAY[i]} build 
+          touch  .${ARCHS_ARRAY[i]}.tgtbld
+          eval ${CMDS_ARRAY[i]} 
+          (( i = i + 1 ))	  
+        else
+          SLOTS[j]=""
+        fi
+      fi
+    fi
+    (( j = j + 1 ))
+  
+  done
+  if [ "`ls .*.tgtbld 2>/dev/null `" = "" ]; then
+    break
+  fi
+  sleep 5
+done
+#Reporting at the end
+echo; echo "Builds done. Here are the results:"
+for TGT in $SIREN_TARGETS;  do
+ if [ -f .$TGT.err ]; then
+    echo "  Architecture $TGT FAILED."
+    FAILED_BUILD=Y
+ else
+   echo "  Architecture $TGT built successfully."
+ fi
+ done
+echo "For more info, please look at the log files, <arch>.log"
+# Fail the build
+if [ "$FAILED_BUILD" = "Y" ]
+  then
+    echo "The build FAILED."
+    exit 1
+fi
+# For a formal build, create the ISO image. Use /tmp if MY_TMPDIR has not been set
+if [ "$BLDTARG" = "formal_no_mk" -a "$ntmkbw_PRODUCTID" = "Siren" ]
+  then
+    echo "This is a formal build. Creating the ISO image..."
+    mkdir -p $MY_TMPDIR/siren_iso 
+    MY_CURDIR=`pwd`
+    cd  ${OBJPATH}/ncl
+    ivt fakeroot 1.2.3 fakeroot ${USE_SRC_ROOT}/vob/siren/tools/pkgtools/utils/t2iso -o $MY_TMPDIR/siren_iso/$MY_ISOFILE -s $MY_TMPDIR/siren_iso tarfiles/*.tgz 2>&1 > $MY_CURDIR/iso.log
+    cp $MY_TMPDIR/siren_iso/$MY_ISOFILE .
+    rm -rf $MY_TMPDIR
+fi
+

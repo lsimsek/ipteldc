@@ -1,0 +1,83 @@
+#
+# tgatep2.tmk --
+#
+# -*-makefile-*-
+
+ifneq (,$(filter %TGATE%,$($._TGATE)))
+
+ifneq ($(%TGATE%TgateDir),)
+  $(error %TGATE% already defined at $(%TGATE%TgateDir))
+  x := $(shell echo %TGATE% already defined at $(%TGATE%TgateDir) 1>&2)
+  error
+endif
+%TGATE%TgateDir := $(CURRDIR)
+#
+# Target/tgate used when a dependancy is required on the files.
+#
+
+%TGATE%Tgate := $(TARGOBJDIR)/%TGATE%Tgate
+%TGATE%TgateCmd := $(TARGOBJDIR)/%TGATE%TgateCmd
+
+# Files and command used last time it was generated (if at all).
+
+%TGATE%TgateUsedFiles := $(shell $(CAT) $(%TGATE%Tgate) 2>/dev/null)
+
+# If the file list is different, remove the 'tgate' file so it will be rebuilt.
+# If there are no tgate files don't remove the file. This covers the case where
+# our deps. are outside our scope (eg. local compile) but were available in
+# the larger scope (eg. global compile). Not perfect, but it avoids rebuilds.
+
+ifneq ($(strip $(%TGATE%TgateUsedFiles)),)
+  ifneq ($(strip $(%TGATE%_TGATEFILES)),)
+    ifneq ($(strip $(%TGATE%TgateUsedFiles)),$(strip $(%TGATE%_TGATEFILES)))
+      x := $(shell $(RM) $(%TGATE%Tgate))
+#      x := $(shell echo XXX1 $(%TGATE%TgateUsedFiles) CMP $(%TGATE%_TGATEFILES))
+    endif
+  endif
+else
+  %TGATE%TgateUsedFiles := $(strip $(%TGATE%_TGATEFILES))
+endif
+
+# The build command for the tgate consists of 2 parts. %TGATE%_TGATECOMMAND
+# is set if it is a script. %TGATE%_TGATECOMMAND2 is the command if it is
+# not a script and it also has any parameters for either command.
+
+_%TGATE%_TGATECOMMAND := $(%TGATE%_TGATECOMMAND) $(%TGATE%_TGATECOMMAND2)
+
+# If the command has changed then nuke the TGATE.
+%TGATE%TgateUsedCmd := $(shell $(CAT) $(%TGATE%TgateCmd) 2>/dev/null)
+ifneq ($(strip $(%TGATE%TgateUsedCmd)),$(strip $(_%TGATE%_TGATECOMMAND)))
+  x := $(shell $(RM) $(%TGATE%Tgate))
+#  x := $(shell echo XXX2 $(%TGATE%TgateUsedCmd) CMP $(_%TGATE%_TGATECOMMAND))
+endif
+
+# If any of the OUTPUTS are missing, nuke the TGATE.
+_%TGATE%_OLDOUTPUTS := $(wildcard $(%TGATE%_TGATEOUTPUTS))
+ifneq ($(strip $(_%TGATE%_OLDOUTPUTS)),$(strip $(%TGATE%_TGATEOUTPUTS)))
+  x := $(shell $(RM) $(%TGATE%Tgate))
+#  x := $(shell echo XXX3 $(_%TGATE%_OLDOUTPUTS) CMP $(%TGATE%_TGATEOUTPUTS))
+endif
+
+TGATE_FILES += $(%TGATE%Tgate)
+
+#Ensure paths used for TGATEOUTPUTS get created
+MKDIRLIST += $(sort $(dir $(%TGATE%_TGATEOUTPUTS)))
+
+# Rule to create/update.
+ifeq ($(strip $(_%TGATE%_TGATECOMMAND)),)
+  $(%TGATE%Tgate): $(%TGATE%_TGATEFILES)
+	cd $(%TGATE%TgateDir) \
+	  && $(ECHO) $(strip $(%TGATE%TgateUsedFiles)) > $@ \
+	  && $(ECHO) > $@Cmd
+else
+  $(%TGATE%Tgate): $(%TGATE%_TGATEFILES) $(%TGATE%_TGATECOMMAND)
+	cd $(%TGATE%TgateDir) \
+	  && $(_%TGATE%_TGATECOMMAND) \
+	  && $(ECHO) $(strip $(%TGATE%TgateUsedFiles)) > $@ \
+	  && $(ECHO) $(subst ;,\;,$(subst >,\>,$(subst &,\&,$(subst |,\|,$(strip $(_%TGATE%_TGATECOMMAND)))))) > $@Cmd
+endif
+
+# Cleanup:
+CLEANFILES += $(%TGATE%Tgate) $(%TGATE%_TGATEOUTPUTS)
+
+endif

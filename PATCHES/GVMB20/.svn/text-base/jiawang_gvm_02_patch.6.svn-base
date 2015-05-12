@@ -1,0 +1,160 @@
+<VSEPATCH>
+   <ADMINDATA>
+       <PATCH_ID>GVMB_2.0.0_4</PATCH_ID>
+       <TITLE>GVMB20_Patch_Bundle_4</TITLE>
+       <ACTIVATION_REQUIRED>N</ACTIVATION_REQUIRED>
+       <APPLY_HANDLING>active</APPLY_HANDLING>
+       <REBOOT_REQUIRED>N</REBOOT_REQUIRED>
+       <CATEGORY>GEN</CATEGORY>
+       <CLASS>corrective</CLASS>
+       <STATUS>S</STATUS>
+       <TYPE>rpm_patch</TYPE>
+       <CR>ABP-1097</CR>
+       <REQUIRES>
+       </REQUIRES>
+       <DESCRIPTION>
+	   
+GVMB20 Patch Bundle 4 2014wk24 contains fixes for:
+
+ABP-893		GVM 2.0 - GVMB should modify instead of delete/re-add 
+		when user modifies SP2KX-properties.
+Description:	When modifying MO SP2K it is deleted and then re-added. 
+		This has been corrected to modify the properties.
+
+ABP-1033	After upgrading GVM to 2.0, GVM can't get SBC's children.
+Description:	During upgrades GVM  could not properly synch up SBC inventory. 
+		An incorrect sql query has been corrected to resolve the issue.
+
+ABP-1035	GVM fails to resync alarms on Genband Media Servers when 
+		SNMPv3 (AuthPriv) configuration is used
+Description:	Secure communication between SNMPv3 entities can not be provided
+		correctly with the current implementation. A fix is delivered 
+		to the Bean components of the high-level API 'SnmpTarget' used
+		for current SNMPv3 operations. The implementation of the 
+		remaining working operations is not changed.
+
+ABP-1078	GVMB 2.0 Patch : Fix for Refreshable Collected Statistics Window
+Description:	If GVM times out while the collecting statistic window opens, 
+		the GVMB Gui becomes unresponsive. A fix to the 
+		CollectedGraphViewer.java resolves the issue.
+
+ABP-1061	R17 to R18 Upgrade: GVM failed to swact in split mode	
+Description:	The issue is caused by performing the upgrade multiple times 
+		using different GVMB 2.0.0 loads or patches: In this case, 
+		the /opt/data/gvm/2.0.0/conf/update_conf.xml will contain a 
+		wrong gvmb product version, which does not match the product 
+		version in the run dir.  This miss match could cause some db 
+		migration code to run twice. Some of the db migration code can 
+		only be run once and will fail if run a second time. The fix is 
+		to update the file /opt/data/gvm/2.0.0/conf/update_conf.xml 
+		before calling the db migration tool, in gvmUpgradeTasks.sh
+
+ABP-1093	Verizon KPI Exception seen	
+Description:	When processing OMs for KPI calculation an execption occurs. 
+		A fix is made to correct incorrect Casting. 
+
+ABP-1091	GVMB specific problem ID mapping for MG9K is out of date
+Description:	Over time the GVMB file which maps specific problem IDs 
+		to string descriptions has become outdated. This fix brings 
+		this file in line with whats mapped in the MG9KEM.
+
+ABP-1086	SFTP connection re-use can cause collection jobs to fail
+Description:	When GVMB collects OM files from the MG9KEM, it re-uses SFTP
+		connections on a per NE basis. This can cause collection 
+		to fail if: 
+		1) 2 collection jobs at the same interval try to read 
+		a file for the same NE at the same time OR 
+		2) 2 collection jobs at different intervals (ex. 5 and 30min) 
+		try to read OM files for the same NE at the same time. 
+		This fix synchronizes connections for the same NE to 
+		avoid this issue.
+
+ABP-926		Java exception appears when modifying AS PM Jobs
+Description:	A Java exception appears when modifying AS PM Jobs. 
+		This exception has been corrected.
+
+ABP-966		R18 OAM SV_Missing some information of Fault/Performance 
+		interface mG9K on Web client
+Description:	On the WebClient "subnet" information is not shown when viewing 
+		Fault interface properties for MG9KEM and "mode" and "User ID" is 
+		not shown under Performance.
+
+       </DESCRIPTION>
+
+       <INSTALL_INSTRUCTIONS>
+All patches should be applied using the NPM. If the NPM is not
+available or if applying a patch manually, proceed  with the
+instructions below.
+To apply this fix along with the next available baseline, wait for
+a baseline to become available and follow the install instructions
+for that baseline.
+cli> software baseline show [baseline-name]
+
+Application Procedure:
+Refer to NTP 630-01240-01 "GENiUS Patching" for details.
+       </INSTALL_INSTRUCTIONS>
+
+       <WARNING>
+During the software patch operation service-units may swact to
+the redundant mate in order to activate the new software. Alarms
+will be set and cleared during the patch command operation. These
+alarms can be ignored during the patch workflow, but outstanding
+alarms should be assessed after the patch operation is completed.
+       </WARNING>
+   </ADMINDATA>
+
+ <PARCEL>
+    <PARCEL_NAME>gvmApp</PARCEL_NAME>
+    <COMPILE_DIR>/vob/gvm/gvmb/tools/build</COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/app/pkg</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_genband</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_genband</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_nms_client</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_nms_client</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf_migration</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_web_inf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_web_inf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_webnms_misc</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_webnms_misc</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_classes</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_classes</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_netmonitor</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_netmonitor</PACKAGE_DIR>
+ </PARCEL>
+
+</VSEPATCH>

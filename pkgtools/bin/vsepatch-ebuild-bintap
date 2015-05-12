@@ -1,0 +1,371 @@
+#!/usr/bin/perl
+###############################################################
+###############################################################
+
+#     #                                                   ###
+#  #  #    ##    #####   #    #     #    #    #   ####    ###
+#  #  #   #  #   #    #  ##   #     #    ##   #  #    #   ###
+#  #  #  #    #  #    #  # #  #     #    # #  #  #         #
+#  #  #  ######  #####   #  # #     #    #  # #  #  ###
+#  #  #  #    #  #   #   #   ##     #    #   ##  #    #   ###
+ ## ##   #    #  #    #  #    #     #    #    #   ####    ###
+
+###############################################################
+#
+# This file should only be updated by the USM team.
+# http://wiki.us.nortel.com/twiki/bin/view/Siren/WhoIsUSM
+#
+# Modifications to this file affect EVERYBODY!
+#
+###############################################################
+
+#################################################################
+#
+#   vsepatch-ebuild-bintap
+# 
+#   Called by ebuild for each patch xml file.
+#
+#################################################################
+
+use strict;
+use File::Basename;
+use Getopt::Long;
+use Cwd qw(abs_path);
+
+BEGIN {
+    if ((defined($ENV{patch_VSE_PATCH_TOOLS_PATH})) &&
+        ($ENV{patch_VSE_PATCH_TOOLS_PATH} ne ""))
+    {
+        if (! -d "$ENV{patch_VSE_PATCH_TOOLS_PATH}")
+        {
+            die "The $ENV{patch_VSE_PATCH_TOOLS_PATH} is not a directory\n\n";
+        }
+        unshift @INC, $ENV{'patch_VSE_PATCH_TOOLS_PATH'};
+    }
+    else
+    {
+        die "The VpUtils library path: patch_VSE_PATCH_TOOLS_PATH env variable must be defined\n\n";
+    }
+}
+
+use VpUtils::VpStreamInfo;
+use VpUtils::VpDebug;
+use VpUtils::VpEbuild;
+use VpUtils::VpScptoolUtils;
+use VpUtils::VpClearcaseUtils;
+use VpUtils::VpGenUtils;
+
+# debug this module
+$VpUtils::VpDebug::debug_on = "debug";
+$VpUtils::VpDebug::noBold = 1;
+
+$| = 1;  # make STDOUT unbuffered
+
+# Im not interested in ALL command line args, avoid error reports
+Getopt::Long::Configure ("pass_through");
+
+# Input parms
+use vars qw (
+    $patchXMLFile
+    $vseIntView
+    $ncglIntView
+    $ncglhaView
+    $outdir);
+
+# Script globals
+use vars qw (
+    $patch_id
+    $session_id
+    $stream_info
+    $scptoolutils
+    $vseBaseline
+    $vseStreamId
+    $vsePvob
+    $ncglBaseline
+    $ncglStreamId
+    $ncglPvob
+    $ncglUnixGID
+    $ncglhaGroup
+    $newBaseline
+    $build_bintap_patch_cmd
+    $pkgtoolVersion
+    $pkgtoolBinDir
+    $pkgtoolConfigDir
+    $current_view
+    @argv);
+
+$stream_info  = new VpUtils::VpStreamInfo;
+$scptoolutils = new VpUtils::VpScptoolUtils;
+$pkgtoolBinDir = dirname(abs_path($0));
+$pkgtoolConfigDir = (-d "$pkgtoolBinDir/config")
+                  ? "$pkgtoolBinDir/config"
+                  : "$pkgtoolBinDir/../config";
+require "$pkgtoolConfigDir/pkgutils.pm";
+# pkgtoolVersion must be aligned with the other pkgtools
+$pkgtoolVersion = "8.0.3";
+
+########
+# MAIN #
+########
+
+#+ Ensure that /usr/atria/bin exists; if it doesn't, fail horribly.
+#+ If it does, add /usr/atria/bin to the $PATH before all else...
+my $cleartool_path = "/usr/atria/bin";
+die "$cleartool_path is required for cleartool commands: Directory does not exist.\n"
+    if (!-d $cleartool_path);
+
+# Add it to PATH if it doesn't exist
+if ($ENV{'PATH'} !~ /:$cleartool_path/)
+{
+    $ENV{'PATH'} .= ":$cleartool_path";
+}
+
+# First arg should be the vse integration view name. (See __END__)
+# This needs to be removed before constructing buildpatch command line below.
+$vseIntView = shift, @ARGV;
+vpDebug ($vseIntView);
+print join("\n", @ARGV), "\n";
+
+# The ncglha-int-view is an optional parameter which will not be passed to the
+# buildpatch command.
+# This is why I am getting this parameter seperately.
+# If it exists, GetOptions will remove it from ARGV array for us and we will
+# save the rest of the arguments for buildbintap.
+# GB - I couldn't find any other solution to this. 
+if (!GetOptions('ncglha-int-view=s' => \$ncglIntView))
+{
+    die "Problem extracting ncglha-int-view from: @ARGV\n";
+}
+
+print "\nUsing VSEPATCH-EBUILD-BINTAP version $pkgtoolVersion.\n\n";
+
+$current_view = `cleartool lsview -s -cview`;
+# Save the VSE baseline created by corrective_startup.pl
+#GB - Adding a temporary update to get me manually run this tool.
+##REMOVE
+if ($ENV{EBUILD_DEBUG})
+{
+    my $blName = `date +"vse50dev_patch_wk\%V_\%Y\%m\%d_\%H\%M"`;
+    chomp $blName;
+
+    $vseBaseline =
+                VpUtils::VpEbuild::create_baseline_in_view($vseIntView, $blName);
+    vpDebug ($blName, $vseBaseline);
+
+    # The baseline has been created. Now we need to rebase the build view.
+    print "Rebasing VSE build view.\n";
+    VpUtils::VpEbuild::rebase_latest_view($current_view);
+}
+else
+{
+$vseBaseline =
+    VpUtils::VpEbuild::get_latest_baseline_in_view($vseIntView);
+}
+
+vpDebug ($vseBaseline);
+# I want to use getopts but I also need to preserve the buildpatch command line
+# so make a copy first.
+@argv = ( @ARGV );
+print "Buildbintap arguments:\n";  
+print join(" ", @argv), " ";
+
+# Extract the Patch XML filename so we can grep for the patch_id
+my $rc = GetOptions(
+         'xml=s'             => \$patchXMLFile,
+         'ncglha-view=s'     => \$ncglhaView,
+         'output=s'          => \$outdir);
+if (!$rc)
+{
+    die "Problem extracting args from: @ARGV\n";
+}
+
+# Validate the input parameters
+die ( "Couldnt extract x from: @ARGV" ) 
+    unless $patchXMLFile;
+
+die "Cant read $patchXMLFile" 
+    unless (-r $patchXMLFile);
+
+# Get VSE Stream info 
+my %streamInfo = ();
+$vseStreamId  = $stream_info->getStreamInfo($vseIntView, \%streamInfo);
+die ("getStreamInfo failed to retrieve data: vseStreamId for $vseIntView\n")
+    unless ( $vseStreamId );
+$vsePvob      = $streamInfo{$vseStreamId}{PROJECT_VOB};
+
+if ($ncglIntView)
+{
+    my %ncgl_streamInfo = ();
+    $ncglStreamId = $stream_info->getStreamInfo($ncglIntView, \%ncgl_streamInfo);
+
+    die ("getStreamInfo failed to retrieve data: ncglStreamId\n")
+        unless ( $ncglStreamId );
+
+    $ncglPvob         = $ncgl_streamInfo{$ncglStreamId}{PROJECT_VOB};
+    $ncglUnixGID      = $ncgl_streamInfo{$ncglStreamId}{UNIX_GROUP_ID};
+    vpDebug ($patch_id, $ncglStreamId, $ncglPvob);
+}
+
+
+#
+# Gather other info
+#
+$patch_id = VpUtils::VpEbuild::get_patch_id_from_patchXML( $patchXMLFile );
+
+# Ebuild scripts create the baseline on the view we are currently on.
+# We just need to get the latest submitted activities between:
+# The Last Successful Patch Baseline and the Current Baseline
+my @tmpActs = VpUtils::VpEbuild::getLatestDeliveredActivities($vseStreamId, "bintap_patch", $vseBaseline);
+my @deliverActs = VpUtils::VpClearcaseUtils::filterOutUnpatchableActivities(\@tmpActs, $current_view);
+print " - Processing the following deliver activities:\n";
+print "    $_\n" foreach ( @deliverActs );
+
+# For the NCGL layer, if this patch has an ncgl component, 
+# we will create the baseline here.
+# So, to identify if there are any delivered activities since the last
+# baseline, this means we will process them in our patch.
+my $ncglComponent = 0;
+if ($ncglIntView)
+{
+    my @ncgl_tmpActs = VpUtils::VpEbuild::get_deliver_activities_since_last_baseline($ncglStreamId, "bintap");
+    my @ncgl_deliver_acts = VpUtils::VpClearcaseUtils::filterOutUnpatchableActivities(\@ncgl_tmpActs, $ncglIntView);
+    if (scalar @ncgl_deliver_acts > 0)
+    {
+        $ncglComponent = 1;
+        # Append the ncgl activities to the delivered activities.
+        push @deliverActs, @ncgl_deliver_acts;
+    }
+}
+
+# If there is ncgl component in this patch, create an ncgl baseline.
+print "Doesnt have ncgl component\n" if (!$ncglComponent);
+
+if ($ncglComponent)
+{
+    if (!$ncglhaView)
+    {
+        die "$patch_id has at least one NCGL activity. The --ncglha-view and --ncglha-loadbuild options are required.\n";
+    }
+
+    # There are ncgl activities in the patch
+    # Create a new NCGL baseline
+    # Now create the new baseline. If there are no changes, the baseline
+    # will not be created, but the command will still be successful.
+    my $blName = `date +"$ENV{'patch_NCGLHA_BASELINE_PREFIX'}_patch_wk\%V_\%Y\%m\%d_\%H\%M"`;
+    chomp $blName;
+
+    $ncglBaseline =
+                VpUtils::VpEbuild::create_baseline_in_view($ncglIntView, $blName);
+    vpDebug ($blName, $ncglBaseline);
+
+    # Validate the Unix group
+    $ncglhaGroup = VpUtils::VpGenUtils::get_users_group_alias($ncglUnixGID);
+    vpDebug($ncglhaGroup);
+    
+    # The baseline has been created. Now we need to rebase the build view.
+    print "Rebasing NCGLHA build view.\n";
+    VpUtils::VpEbuild::rebase_latest_view($ncglhaView);
+}
+
+# We are ready to build the patch
+################################################################################
+# Run buildpatch
+#
+# First reconstruct the buildpatch command line from the saved copy of our
+# command line.
+$build_bintap_patch_cmd = join ( " ", @argv );
+$build_bintap_patch_cmd .= " --activities " . join(",", @deliverActs);
+$build_bintap_patch_cmd .= " --build-type EBUILD";
+print "\n\n" . basename( $0 ) . " is executing:\n\n$build_bintap_patch_cmd\n\n";
+
+my $rc = system($build_bintap_patch_cmd);
+if ($rc != 0 )
+{
+    # BuildBintapPatch returned error or Couldnt exec
+    $rc = $rc >> 8;
+    die ( "Execution of buildpatch failed, returned: $rc" );
+}
+
+# Patch Build was successful
+
+# Send all of the following scptool commands in one transaction
+# to avoid having to rollback..
+
+my @cmds;
+push @cmds, $scptoolutils->get_register_built_patch_id_cmd(
+                                  $patch_id,
+                                  $vseStreamId,
+                                  'BINTAP');
+
+push @cmds, $scptoolutils->get_register_new_baselines_cmd(
+                                  $patch_id,
+                                  $vseStreamId,
+                                  $vseBaseline.'@'.$vsePvob);
+
+if ($ncglComponent && $ncglBaseline)
+{
+    push @cmds, $scptoolutils->get_register_built_patch_id_cmd(
+                                  $patch_id,
+                                  $ncglStreamId,
+                                  'BINTAP');
+
+    push @cmds, $scptoolutils->get_register_new_baselines_cmd(
+                                  $patch_id,
+                                  $ncglStreamId,
+                                  $ncglBaseline.'@'.$ncglPvob);
+}
+
+# Assuming that the $build_bintap_patch_cmd places the data file
+# in $outdir named as: $patch_id.data 
+push @cmds, $scptoolutils->get_patch_data_file_submit_cmd(
+                                 $patch_id, 
+                                 "$outdir/$patch_id.data");
+
+# set the patch id state to closed in PACS
+push @cmds, $scptoolutils->get_patch_status_set_cmd(
+                                 $patch_id,
+                                 "CLOSED");
+
+# Now execute all of the registration commands in one transaction.
+# Scptool transaction push, commit feature cancels the transaction
+# if any of the commands fail.
+my $rc;
+$rc = $scptoolutils->execute_multiple_scptool_commands(@cmds);
+VpUtils::VpGenUtils::report_error_and_exit($rc, "Failed to execute the following commands: @cmds")
+    if ($rc != 0);
+
+# Everything must have passed according to plan, unlock the stream for
+# new deliveries.  Assuming that ALL streams will be locked and unlocked
+# by one scptool command. vse-rpm, vse-bintap, ncgl-rpm and ncgl-bintap
+#
+$rc = VpUtils::VpEbuild::release_stream_lock( $vseStreamId, $patch_id );
+VpUtils::VpGenUtils::report_error_and_exit($rc, "Failed to release the stream lock.")
+    if ($rc != 0);
+1;  # don't forget to return a true value from the file
+
+__END__
+
+varfile.pm needs to modified to...
+
+my $vsepatch-ebuild-bintap = '/home/gulenb/bintap/ebuild/vsepatch-ebuild-bintap';
+$$var{buildpatch_script}     = "/home/gulenb/bintap/ebuild/buildbintap";
+$$var{buildpatch_com} = "cd $$var{build_setup_dir} && . setup.sh && . ubuild_setup && $vsepatch-ebuild-bintap $$var{int_view} --ncglha-int-view $$var{ncgl_int_view} $$var{buildpatch_script} -x $$var{patch_meta_dir}/$$var{patch_act} --ncglha-view $$var{ncgl_ha_view} --output $$var{prep_dir} --logdir $$var{build_path}/components --update-version-file ";
+
+command line test:
+ct setview gulenb_vse50dev-bin_ebuild
+setenv patch_BINTAP_PATCHVER_FILE /home/gulenb/bintap/config/bintap_version_vse50dev.ebuild && \
+setenv patch_RPM_PATCHVER_FILE /home/gulenb/bintap/config/version_vse50 && \
+/home/gulenb/bintap/ebuild/vsepatch-ebuild-bintap \
+          gulenb_wcary1vq_vse50dev-bin_ro \
+          --ncglha-int-view gulenb_wcary1vq_ncgl140dev-bin_ro \
+          /home/gulenb/bintap/ebuild/buildbintap -x /vob/siren/tools/PATCHES/VSE50/gulenb_vse_5_1.25 \
+          --ncglha-view gulenb_ncgl140dev-bin_ebuild --output /home/gulenb/bintap/patches \
+          --logdir /vob/siren/tools/PATCHES/VSE50 \
+          --patchdir /home/gulenb/bintap/patches \
+          --update-version-file \
+          --nocleanup |tee log.log
+
+/home/gulenb/bintap/working/ubuild/DEV3/vsepatch-ebuild-bintap gulenb_wcary1vq_vse50dev-bin_ro --ncglha-int-view gulenb_wcary1vq_ncgl140-bin_ro /home/gulenb/bintap/working/ubuild/DEV3/vsepatch-build-bintap-patch -x /vob/siren/tools/PATCHES/VSE50/gulenb_vse_5_1.10 --output ~/bintap/patches --logdir /vob/siren/tools/PATCHES/VSE50 --patchdir /vob/siren/tools/PATCHES/ --update-version-file
+
+cd /vob/siren/tools/build && source ./setup.sh && source ./ubuild_setup && /patching/patchgts/vse/tools/vp2/vsepatch-ebuild-rpm jguyea_wcary1vq_vse50dev-rpm_ro /vob/siren/tools/pkgtools/buildpatch -x /vob/siren/tools/PATCHES/VSE50/jguyea_vse_5_1.73 --output /vob/siren/tools/PATCHES/VSE50 --build-version 5.1.0.095005 --loadbuild vse51_wk50_20091207_5.1.0.095005.0 --logdir /vob/siren/tools/PATCHES/VSE50/buildlogs --patchdir /vob/siren/tools/PATCHES/ --ncglwrs-pkgdir /opt/soe/lb/ncgl_loads4/ncgltar/ncgl140/rhe_40/latest_build/ncgl/ --remote --ncglha-view jguyea_ncgl140dev-rpm_ebuild-ncgltest -ncglha-int-view jguyea_wcary1vq_ncgl140dev-rpm_ro | tee log.log
+

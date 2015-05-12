@@ -1,0 +1,36 @@
+#!/bin/sh
+
+TARTMPDIR=`mktemp -dt tartemp.XXXXXX`
+FILELIST=$1
+TARFILE=$2
+
+if [ -z "$FILELIST" -o -z "$TARFILE" ]; then
+    echo "$0: missing arguments"
+    exit 1
+fi
+
+while read line
+do
+  echo $line | grep '^ *$' >/dev/null 2>/dev/null && continue
+  echo $line | grep '^#' >/dev/null 2>/dev/null && continue
+  SRC=`eval echo $line | cut -d " " -f1`
+  if [ ! -e $SRC ]; then
+    echo "ERROR: Unable to locate $SRC"
+    exit 1
+  fi
+  DEST=`echo $line | cut -d " " -f2`
+#  echo $line
+  DEST_PATH=`dirname $DEST`
+  mkdir -p $TARTMPDIR/$DEST_PATH
+  if [ -L $SRC ]; then
+    cp -a --no-dereference $SRC $TARTMPDIR/$DEST
+  else
+    cp -a $SRC $TARTMPDIR/$DEST
+  fi
+done < $FILELIST
+
+cd $TARTMPDIR
+chmod -R a+rX,ug+w .
+tar cvfz $TARFILE .
+
+rm -rf $TARTMPDIR

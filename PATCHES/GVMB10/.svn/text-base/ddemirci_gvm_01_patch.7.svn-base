@@ -1,0 +1,124 @@
+<VSEPATCH>
+   <ADMINDATA>
+       <PATCH_ID>GVMB_1.0.0_8</PATCH_ID>
+       <TITLE>GVMB_Patch_Bundle_8</TITLE>
+       <DESCRIPTION>
+        PATCH JIRA
+        ==========
+        ABP-455
+
+        FIX JIRA
+        ========
+        GVMB Patch Bundle 8 2013WK03 contains fixes for:
+        ABP-441,
+        A00027951,
+        ABP-391,
+        ABP-437,
+        ABP-447,
+        ABP-434,
+        ABP-432
+       </DESCRIPTION>
+       <ACTIVATION_REQUIRED>N</ACTIVATION_REQUIRED>
+       <APPLY_HANDLING>manual</APPLY_HANDLING>
+       <REBOOT_REQUIRED>Y</REBOOT_REQUIRED>
+        <CATEGORY>GEN</CATEGORY>
+        <CLASS>corrective</CLASS>
+        <STATUS>S</STATUS>
+        <TYPE>rpm_patch</TYPE>
+        <CR>ABP-455</CR>
+       <TEST_INSTRUCTIONS>Test instructions in SV testcases linked to these Jiras.
+       The following manual steps must be used when removing the GVMB PB 8 patch:
+       1.   Determine which gvm SU is active:
+       cli>aim si show gvm
+       
+       2.   Lock the standby gvm SU first and then the active gvm SU:
+       cli>aim service-u lock gvm (standby su)
+       cli>aim service-u lock gvm (active su) f
+       
+       3.   Run the roll-back command:
+       /run/opt/corp/gvm/1.0.0/bin/migrationTool.sh rollback  GVM.1.0.0.124103.7
+       
+       4.   Unload the two gvm SUs:
+       cli>aim service-u unload gvm 0
+       cli>aim service-u unload gvm 1
+       
+       5.   Remove the GVMB PB 8 patch (Note: GVM PB 8 is a reboot-required patch).
+       
+       6.   Load the GVM SUs and unlock them.
+       </TEST_INSTRUCTIONS>
+       <WARNING>
+       </WARNING>
+       <REQUIRES>
+       </REQUIRES>
+   </ADMINDATA>
+
+ <PARCEL>
+    <PARCEL_NAME>gvmApp</PARCEL_NAME>
+    <COMPILE_DIR>/vob/gvm/gvmb/tools/build</COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/app/pkg</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_genband</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_genband</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_hbnlib</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_hbnlib</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_migration</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_classes</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_classes</PACKAGE_DIR>
+ </PARCEL>
+
+  <PARCEL>
+    <PARCEL_NAME>gvm_web_inf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_web_inf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_webclient</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_webclient</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf_migration</PACKAGE_DIR>
+ </PARCEL>
+ 
+  <PARCEL>
+    <PARCEL_NAME>gvm_help</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_help</PACKAGE_DIR>
+ </PARCEL>
+ 
+ <REBOOT_CRITERIA_LIST>
+    <REBOOT_CRITERIA> 
+        <APP_SERVICE_GROUP>gvm</APP_SERVICE_GROUP>
+    </REBOOT_CRITERIA> 
+ </REBOOT_CRITERIA_LIST>
+
+
+</VSEPATCH>
+
+

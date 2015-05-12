@@ -1,0 +1,185 @@
+#!/usr/bin/perl -w
+
+# This Perl script exports the environment variables 
+# defined in the common.config file set by the ubuild_setup. 
+# It is also called by ubuild_setup to export these env vars. 
+#
+# USAGE:
+# 1. Exporting ENV vars for PERL:
+#    eval `/vob/siren/tools/pkgtools/export_ubuild_env_vars perl`
+#    eval `/vobs/lsba_platform_tools/pkgtool/bin/export_ubuild_env_vars perl`
+#
+# 2. Exporting ENV vars for SHELL:
+#    eval `/vob/siren/tools/pkgtools/export_ubuild_env_vars sh`
+#    eval `/vobs/lsba_platform_tools/pkgtool/bin/export_ubuild_env_vars sh`
+#
+# 3. Exporting ENV vars for CSHELL:
+#    eval `/vob/siren/tools/pkgtools/export_ubuild_env_vars csh`
+#    eval `/vobs/lsba_platform_tools/pkgtool/bin/export_ubuild_env_vars csh`
+
+
+use strict;
+use warnings 'all';
+use English;
+use File::Basename;
+use Cwd qw(abs_path);
+
+$OUTPUT_AUTOFLUSH = 1;
+
+sub WriteVariables
+{
+   my($writer, $variables) = @_;
+   my($var);
+
+   foreach $var (sort(keys(%{$variables})))
+   {
+      &{$writer}($var, $variables->{$var});
+   }
+
+   return;
+}
+
+sub CshWriter
+{
+   my($variable, $value) = @_;
+
+   $value =~ s/\"//g;
+   print "setenv $variable \"$value\";\n";
+
+   return;
+}
+
+
+sub ShWriter
+{
+   my($variable, $value) = @_;
+
+   $value =~ s/\"//g;
+   print "$variable=\"$value\"; export $variable;\n";
+
+   return;
+}
+
+
+sub PerlWriter
+{
+   my($variable, $value) = @_;
+
+   $value =~ s/\"//g;
+   print "\$ENV{'$variable'} = '$value';\n";
+
+   return;
+}
+
+#
+# Given a command find the shell type.
+#
+sub detectShellType($) {
+    my ( $name ) = @_;
+
+    # Accept things like " /bin/sh -hi"
+    # and -sh
+    $name =~ s/^\s*//;
+    $name =~ s/[\s].*//;
+    $name =~ s/^.*\///;
+    $name =~ s/[\s]*$//;
+    $name =~ s/-//;
+
+
+    if ($name =~ /^(sh|bash|ksh|zsh)$/) 
+    {
+        return 'sh';
+    } 
+    elsif ( $name =~ /^(csh|tcsh)$/) 
+    {
+        return 'csh';
+    } 
+    elsif ( $name eq 'perl')
+    {
+        return 'perl';
+    }
+    else
+    {
+        warn "Unable to determine shell from $name. Defaulting to sh";
+        return 'sh';
+    }
+}
+
+sub GetUbuildEnvVars($)
+{
+    my $vars = shift;
+
+    open GETENV, "ubuild -D --exec printenv | egrep \"ubuild_CONFIG_DIR|ntmkbw_|patch_|PATCH_|OBJPATH|USE_|TOPDIR|RPS_HOST|productdef_\" |"
+        or die "ERROR: Failed to get environment setup";
+    while (<GETENV>)
+    {
+        chomp;
+        next if ($_ !~ /=/);
+        # $pkgsInDir exists in ncgl env vars as a variable
+        # not sure how else to handle this..
+        next if ($_ =~ /pkgsInDir/);
+        next if ($_ =~ /loadDirName/);
+        chomp;
+        m/^([^=]*)=(.*)$/;
+        # add ubuild_CONFIG_DIR to PATH
+        if ($1 eq 'ubuild_CONFIG_DIR')
+        { 
+            # add to PATH
+            my $path = (defined $vars->{'PATH'})
+                     ? $vars->{'PATH'}
+                     : $ENV{'PATH'};
+            $path = "$2:$path";
+            $vars->{'PATH'} = $path;
+        }
+        else
+        {
+            $vars->{$1} = $2;
+        }
+    }
+    close GETENV;
+}
+
+# MAIN
+{
+   my %variables;
+   my $shell_type;
+   my $path; 
+   my $pkgtoolBinDir;
+
+   if ($#ARGV != 0)
+   {
+      print STDERR "Syntax: $0 <csh|sh|perl>\n";
+      exit(1);
+   }
+
+   # detectShellType defaults the shell type to sh
+   $shell_type = detectShellType(lc(shift(@ARGV)));
+    
+   $pkgtoolBinDir = dirname(abs_path($0));
+   $path = "$pkgtoolBinDir:$ENV{'PATH'}";
+   $variables{'PATH'} = $path;
+
+   GetUbuildEnvVars(\%variables);
+
+   if ($shell_type eq 'csh')
+   {
+      WriteVariables(\&CshWriter, \%variables);
+      print "rehash;\n";
+   }
+   elsif ($shell_type eq 'sh')
+   {
+      WriteVariables(\&ShWriter, \%variables);
+   }
+   elsif ($shell_type eq 'perl')
+   {
+      WriteVariables(\&PerlWriter, \%variables);
+   }
+   else
+   {
+      print "Unrecognized shell type, $shell_type.\n";
+      exit(1);
+   }
+
+}
+
+exit(0);

@@ -1,0 +1,612 @@
+#!/usr/bin/env perl
+#
+# This tool provides a means to generate ESDs with appropriate
+# software lineups, based on an ESD lineup configuration file.
+#
+
+use warnings "all";
+use strict;
+
+use Getopt::Std;
+use File::Path;
+
+
+# Autoflush STDOUT
+$| = 1;
+
+#############################################################################
+#
+# Globals
+#
+use vars qw (
+    $ignoreMissing
+    $esdFile
+    $nclmapFile
+    $pkgtoolDir
+    $pkgtoolVersion
+    $platform
+    $productCodeDefault
+    $productIdDefault
+    $productVersionDefault
+    $tmpdir
+    %esds
+    %nclmap
+    %pecToPlatformNcls
+    %platformNcls
+    @toBuild
+);
+
+# pkgtoolVersion must be aligned with the other pkgtools
+$pkgtoolVersion = "8.0.3";
+
+#
+# showUsage:
+#
+# Display help message, and a list of available esdnames.
+#
+sub showUsage()
+{
+    print STDERR <<EOF;
+$0 (version $pkgtoolVersion)
+
+Utility for building ESDs
+  Options:
+    -l <esdname|all>   - build specified esds (or all)
+    -i <dir>           - input dir, where to find the tarfiles/dmtarfiles dirs
+    -o <dir>           - output dir, where to place the ISO files
+    -q all             - show list of available esdnames
+    -q <esdname>       - show list of NCLs in specified esd
+
+Supported esdnames:
+EOF
+    printf STDERR "%s\n\n", (join ", ", sort keys %esds);
+
+    exit (1);
+}
+
+#
+# Get cmdline options and check for help request
+#
+my %opts = ();
+if (!getopts('hl:i:o:q:', \%opts)  || $opts{h})
+{
+    showUsage();
+}
+
+#
+# Initialize global variables and validate required ENV variables
+#
+
+$esdFile    = $ENV{USE_ESDFILE};
+
+# Check whether an ESD lineup file exists
+if (! defined $esdFile)
+{
+    # The application has not configured an ESD file, which is not a failure.
+    warn "USE_ESDFILE variable not defined. Skipping ESD generation.\n";
+    exit 0;
+}
+
+# Validate required ENV vars
+sub checkRequiredEnv(@)
+{
+    my @missingEnv = grep { ! defined $ENV{$_} } @_;
+    if (scalar @missingEnv > 0)
+    {
+        die "The following environment variables must be set:\n",
+            (join "\n", sort @missingEnv), "\n";
+    }
+}
+
+# Workaround to allow utest to call createTars directly
+if (!defined $ENV{PROD_RELEASE} and defined $ENV{ntmkbw_PROD_RELEASE})
+{
+    $ENV{PROD_RELEASE} = $ENV{ntmkbw_PROD_RELEASE};
+}
+
+if (!defined $ENV{VSE_RELEASE} and defined $ENV{ntmkbw_VSE_RELEASE})
+{
+    $ENV{VSE_RELEASE} = $ENV{ntmkbw_VSE_RELEASE};
+}
+
+if (!defined $ENV{PKG_VERSION})
+{
+    $ENV{PKG_VERSION} = "$ENV{PROD_RELEASE}.0.0";
+}
+
+checkRequiredEnv(
+    qw(
+        ntmkbw_PRODUCTID
+        PROD_RELEASE
+        VSE_RELEASE
+        USE_NCLMAPFILE
+    )
+);
+
+if ($ENV{ntmkbw_PRODUCTID} eq "Siren")
+{
+    # Validate required env vars for the platform layer
+    checkRequiredEnv(
+        qw(
+            TOPDIR
+        )
+    );
+
+    # Platform-specific globals
+    $pkgtoolDir = "$ENV{TOPDIR}/tools/pkgtools";
+    $platform = 1;
+
+    $productCodeDefault = "CNP";
+    $productIdDefault   = "CNP";
+    $productVersionDefault  = $ENV{VSE_RELEASE};
+}
+else
+{
+    # Validate required env vars for the application layer
+    checkRequiredEnv(
+        qw(
+            productdef_PRODUCT_CODE
+            productdef_PRODUCT_ID
+            productdef_PRODUCT_VERSION
+        )
+    );
+
+    # Application-specific globals
+    $pkgtoolDir = (defined $ENV{pkgtoolPATH})
+                      ? $ENV{pkgtoolPATH}
+                      : "$ENV{USE_SRC_ROOT}/vobs/lsba_platform_tools/pkgtool";
+    $platform = 0;
+
+    $productCodeDefault = $ENV{productdef_PRODUCT_CODE};
+    $productIdDefault   = $ENV{productdef_PRODUCT_ID};
+    $productVersionDefault  = $ENV{productdef_PRODUCT_VERSION};
+}
+
+require "$pkgtoolDir/config/pkgutils.pm";
+
+%esds = ();
+
+
+# Create the tmpdir
+chomp ($tmpdir = `mktemp -d -p /tmp buildEsd.XXXXXX`);
+if (! -d $tmpdir)
+{
+    die "Unable to create working directory.\n";
+}
+
+#
+# The "END" is a special sub-routine that allows us to do some special handling
+# when the script exits. This is called when either exit or die are called,
+# and gives us a single place where we can clean up the temporary directory.
+# This is analogous to doing a "trap on exit" in bash.
+#
+END
+{
+    my $rc = $?;
+
+    if ((defined $tmpdir) and (-d $tmpdir))
+    {
+        #print "Cleaning up working directory: $tmpdir.\n";
+        `rm -rf $tmpdir`;
+    }
+
+    $? = $rc;
+}
+
+# Catch interrupts.
+# This will result in "die" being called, which in turn will call "END" above.
+use sigtrap qw(die normal-signals);
+#############################################################################
+
+#############################################################################
+#
+# Function definitions
+#
+
+#
+# generateProductdef:
+#
+# Generates a productdef file for the ESD.
+#
+sub generateProductdef($$)
+{
+    my $dir = shift;
+    my $esd = shift;
+
+    my $productCode = (defined $esds{$esd}{PRODUCT_CODE})
+                            ? $esds{$esd}{PRODUCT_CODE}
+                            : $productCodeDefault;
+    my $productId = (defined $esds{$esd}{PRODUCT_ID})
+                            ? $esds{$esd}{PRODUCT_ID}
+                            : $productIdDefault;
+    my $productVersion = (defined $esds{$esd}{PRODUCT_VERSION})
+                            ? $esds{$esd}{PRODUCT_VERSION}
+                            : $productVersionDefault;
+
+    my $productdef = "$dir/$productId.productdef";
+
+    open DEF, ">$productdef"
+        or die "Failed to open $productdef";
+
+    my $productTitle = sprintf "%s Release %s",
+        ($platform == 1) ? "GENiUS" : $productId,
+        $productVersion;
+
+    $productTitle = $esds{$esd}{PRODUCT_TITLE} 
+        if (defined $esds{$esd}{PRODUCT_TITLE});
+
+    my $productDescription = sprintf "%s software load for release %s",
+        ($platform == 1) ? "GENiUS" : $productId,
+        $productVersion;
+
+    $productDescription = $esds{$esd}{PRODUCT_DESCRIPTION} 
+        if (defined $esds{$esd}{PRODUCT_DESCRIPTION});
+
+    my $compatibleProducts = join "\n", @{$esds{$esd}{UPG_FROM_PLATFORM}};
+    my $compatibleProductVersions = join "\n", @{$esds{$esd}{UPG_FROM_PRODVER}};
+    my $platformNcls = "";
+    my $applicationList = "";
+    if ($platform == 1)
+    {
+        $platformNcls = join "\n", @{$esds{$esd}{NCL}};
+    }
+    else
+    {
+        # Generate the list of required platform NCLs
+        my %reqPlatformNcls = ();
+        my $invalidCount = 0;
+
+        for my $pec (sort @{$esds{$esd}{PECS}})
+        {
+            if (!defined $pecToPlatformNcls{$pec})
+            {
+                warn "The following PEC is not configured in the platform NCL map: $pec\n";
+                $invalidCount++;
+                next;
+            }
+
+            map($reqPlatformNcls{$_}++, @{$pecToPlatformNcls{$pec}});
+        }
+        die "Aborting due to unrecognized PEC(s)" if ($invalidCount > 0);
+
+        $platformNcls = join "\n", (sort keys %reqPlatformNcls);
+
+        # Generate the application list
+        my $appNcls = join "\n", @{$esds{$esd}{NCL}};
+        $applicationList = "
+      <product_application_list>
+         <product_application_entity>
+            <product_application_id>$ENV{ntmkbw_PRODUCTID}</product_application_id>
+            <product_application_release>$ENV{PROD_RELEASE}</product_application_release>
+            <product_ncl_list>
+$appNcls
+            </product_ncl_list>
+         </product_application_entity>
+      </product_application_list>
+";
+    }
+
+    printf DEF "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    printf DEF "<!-- GENiUS %s product definition file, generated %s -->\n",
+        ($platform == 1) ? "platform" : "application",
+        scalar (localtime);
+    printf DEF "
+<product>
+   <metaversion>1</metaversion>
+   <payload>
+      <product_code>$productCode</product_code>
+      <product_id>$productId</product_id>
+      <product_version>$productVersion</product_version>
+      <product_title>$productTitle</product_title>
+      <product_description>$productDescription</product_description>
+      <product_baseline>$ENV{VSE_RELEASE}</product_baseline>
+      <compatible_products>
+$compatibleProducts
+      </compatible_products>
+      <compatible_product_versions>
+$compatibleProductVersions
+      </compatible_product_versions>
+      <platform_ncl_list>
+$platformNcls
+      </platform_ncl_list>
+$applicationList
+   </payload>
+</product>
+";
+    close DEF;
+}
+
+#
+# generatePecMap:
+#
+# This function generates the platform pec map that application layers
+# use for determining required NCLs.
+#
+sub generatePecMap($)
+{
+    my $outdir = shift;
+
+    return if ($platform != 1);
+
+    my $cfgfile = "$ENV{TOPDIR}/tools/pkgtools/config/pecNclMapping.list";
+    my %pecToNcls = ();
+
+    open PECNCL, "$cfgfile"
+        or die "Failed to read $cfgfile: $!";
+
+    while (<PECNCL>)
+    {
+        # Strip comments and trailing spaces
+        s/#.*//;
+        s/\s*$//;
+
+        if (/^([^:]+):([^:]*):([^:]*)/)
+        {
+            # We only care about the required pecs, and ignore the optional ones
+            my $pec = $1;
+            my @reqNcls = split(/,/, $2);
+
+            for my $ncl (@reqNcls)
+            {
+                # Append the NCL version
+                $pecToNcls{$pec}{$ncl . $ENV{USE_NCLVERSION}}++;
+            }
+        }
+    }
+
+    close PECNCL;
+
+    open OUT, ">$outdir/platformNclMap.list"
+        or die "Failed to create $outdir/platformNclMap.list";
+
+    for my $pec (sort keys %pecToNcls)
+    {
+        printf OUT "%s:%s\n",
+            $pec,
+            join(",", (sort keys %{$pecToNcls{$pec}}));
+    }
+
+    close OUT;
+
+    print "Generated: $outdir/platformNclMap.list\n";
+}
+
+#
+#
+#
+sub parsePlatformMap
+{
+    # First, we need to find the file
+    if (!defined $ENV{PRVL_PKGS_IN_DIR} or $ENV{PRVL_PKGS_IN_DIR} eq "")
+    {
+        # Skip the platform pec map
+        return;
+    }
+
+    my @prvldirs = split(/\s+/, $ENV{PRVL_PKGS_IN_DIR});
+    my $mapfile = "";
+
+    for my $dir (@prvldirs)
+    {
+        my $f = "$dir/../ncl/esdfiles/platformNclMap.list";
+        if (-f $f)
+        {
+            warn "Debug: Found: $f\n";
+            $mapfile = $f;
+            last;
+        }
+        else
+        {
+            warn "Debug: Not found: $f\n";
+        }
+    }
+
+    if ($mapfile eq "")
+    {
+        die "Failed to find platformNclMap.list";
+    }
+
+    open MAP, "$mapfile"
+        or die "Failed to read $mapfile: $!";
+
+    while (<MAP>)
+    {
+        chomp;
+
+        # Strip comments and trailing spaces
+        s/#.*//;
+        s/\s*$//;
+
+        if (/^([^:]+):([^:]*)/)
+        {
+            push @{$pecToPlatformNcls{$1}}, (split(/,/, $2));
+        }
+    }
+
+    close MAP;
+}
+#############################################################################
+
+
+#############################################################################
+#
+# Main
+#
+
+print "\nUsing buildEsd version $pkgtoolVersion.\n\n";
+
+#
+# Read the configuration files
+# 
+$nclmapFile = $ENV{USE_NCLMAPFILE};
+
+if (! -f $esdFile)
+{
+    die "ESD config file does not exist: $esdFile";
+}
+
+%nclmap = ();
+
+if (parseNclMapping($nclmapFile, \%nclmap) != 0)
+{
+    die "Failed to parse $nclmapFile";
+}
+
+%esds = ();
+if (parseEsdLineup($esdFile, \%esds) != 0)
+{
+    die "Failed to parse $esdFile";
+}
+
+#
+# Validate cmdline options
+#
+if ($opts{q})
+{
+    if ($opts{q} eq "all")
+    {
+        printf "%s\n", (join " ", sort keys %esds);
+        exit (0);
+    }
+    elsif (!defined $esds{$opts{q}})
+    {
+        print STDERR "Unrecognized esdname: $opts{q}\n\n";
+        showUsage();
+    }
+
+    print "The $opts{q} esd consists of the following NCLs:\n\n";
+    printf "\t%s\n", (join "\n\t", sort @{$esds{$opts{q}}{NCL}});
+    exit (0);
+}
+
+if (!$opts{l})
+{
+    showUsage();
+}
+
+if (!$opts{i})
+{
+    # Set a default
+    $opts{i} = "$ENV{OBJPATH}/ncl";
+}
+
+if (!$opts{o})
+{
+    # Set a default
+    $opts{o} = "$ENV{OBJPATH}/ncl/esdfiles";
+
+    if (! -d $opts{o})
+    {
+        mkdir $opts{o} or die "Failed to create dir: $opts{o}";
+    }
+}
+
+if (! -d $opts{i})
+{
+    die "Directory does not exist: $opts{i}\n";
+}
+
+if (! -d $opts{o})
+{
+    die "Directory does not exist: $opts{o}\n";
+}
+
+if ($opts{l} eq "all")
+{
+    push @toBuild, keys %esds;
+    $ignoreMissing = 1;
+}
+elsif (!defined $esds{$opts{l}})
+{
+    print STDERR "Unrecognized esdname: $opts{l}\n\n";
+    showUsage();
+}
+else
+{
+    push @toBuild, $opts{l};
+}
+
+if ($platform == 1)
+{
+    # Generate the platform NCL map
+    generatePecMap($opts{o});
+}
+else
+{
+    # Parse the platform NCL map
+    parsePlatformMap();
+}
+
+# Build the ESDs
+for my $esd (sort @toBuild)
+{
+    my @missing;
+    my @contents;
+
+    chdir $opts{i};
+
+    for my $ncl (sort @{$esds{$esd}{NCL}})
+    {
+        my $tarfile = "tarfiles/$ncl.tgz";
+        if (! -f $tarfile)
+        {
+            push @missing, $tarfile;
+        }
+
+        push @contents, $tarfile;
+    }
+
+    if (scalar @missing > 0)
+    {
+        print STDERR "Unable to build $esd, as the following files are missing:\n";
+        for my $f (@missing)
+        {
+            print STDERR "$f\n";
+        }
+        print STDERR "\n";
+
+        if (!$ignoreMissing)
+        {
+            exit (1);
+        }
+    }
+    else
+    {
+        my $esdName;
+
+        if ($platform == 1)
+        {
+            $esdName = sprintf "%s.%s.PLAT.ESD", $esd, $ENV{PKG_VERSION};
+        }
+        else
+        {
+            $esdName = sprintf "%s.%s.APP.ESD", $esd, $ENV{PKG_VERSION};
+        }
+
+        # Create working dir
+        my $esddir = "$tmpdir/$esdName/DVD1";
+        my $ncldir = "$esddir/NCL";
+        mkpath($ncldir)
+            or die "Failed to create $ncldir";
+
+        # Generate productdef
+        generateProductdef($ncldir, $esd);
+
+        # Setup ESD
+        foreach my $tarfile (@contents)
+        {
+            system("tar xzf $tarfile -C $esddir") == 0
+                or die "Failed to extract $tarfile to $esddir: $!";
+        }
+
+        # Generate tarball
+        system("tar czf $opts{o}/$esdName.tgz -C $tmpdir $esdName") == 0
+            or die "Failed to create $opts{o}/$esdName.tgz: $!";
+
+        print "Generated: $opts{o}/$esdName.tgz\n";
+
+        rmtree $esddir
+            or die "Failed to rmtree $esddir";
+    }
+}
+

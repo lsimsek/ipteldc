@@ -1,0 +1,189 @@
+#!/usr/bin/perl
+#######################################################################
+# FILE path_mapper
+#
+# DESCRIPTION
+#    Tool for generating object path mapping file for use by Workbench
+#
+# RELATED DOCUMENTS
+#
+# OTHER RELEVANT DOCUMENTS
+#
+#
+# Copyright(c) 2007 Northern Telecom Ltd, All Rights Reserved
+#
+# CONFIDENTIALITY AND RESTRICTED USE
+#
+# This software, including any software of third parties embodied herein,
+# contains information and concepts which are confidential to Northern Telecom
+# Ltd and such third parties. This software is licensed for use solely in
+# accordance with the terms and conditions of the applicable license agreement
+# with Northern Telecom Ltd or its authorized distributor.
+#
+# Restricted Rights legend:
+#
+# Use, duplication, or disclosure by the U.S. Government is subject to
+# restrictions as set forth in subparagraph (c)(1)(ii) of the Rights in
+# Technical Data and Computer Software clause at DFARS 252.227-7013 and/or
+# the Commercial Computer Software Restricted Rights clause at FAR
+# 52.227-19(c).
+#
+#######################################################################
+
+use Getopt::Long;
+
+$rc = GetOptions('filename=s'      => \$filename,
+                 'arch=s'          => \$arch,
+                 'help'            => \$help);
+
+sub showHelp
+{
+    print STDERR <<OUT;
+
+Arguments:
+
+    --arch <arch>
+    --filename <output-file>
+
+OUT
+    exit 0;
+}
+
+if (!$rc || defined($help))
+{
+    &showHelp;
+}
+
+
+########################################
+#
+# Generate individual mapping
+#
+# ;<target architecture>:<view name>:<target path>:<host path>
+########################################
+sub printMapping($$$$)
+{
+    my $arch    = shift;
+    my $view    = shift;
+    my $runtime = shift;
+    my $objpath = shift;
+
+    printf OUTFILE ";%s:%s:%s:%s\n",
+           $arch,
+           $view,
+           $runtime,
+           $objpath;
+}
+
+########################################
+#
+# Generate mappings for the global dirs
+#
+########################################
+sub mapObjpath($$$)
+{
+    my $arch    = shift;
+    my $view    = shift;
+    my $objpath = shift;
+
+    foreach my $runtime (@binDirs)
+    {
+        printMapping $arch, $view, $runtime, "$objpath/bin";
+    }
+
+    foreach my $runtime (@libDirs)
+    {
+        printMapping $arch, $view, $runtime, "$objpath/lib";
+    }
+}
+
+
+########################################
+#
+# binDirs and libDirs are lists of all
+# non-application runtime dirs
+#
+########################################
+@binDirs = qw(
+              /bin
+              /sbin
+              /usr/bin
+              /usr/sbin
+              /usr/local/bin
+              /usr/local/bin/ee
+              /usr/local/sbin
+             );
+
+@libDirs = qw(
+              /lib
+              /usr/lib
+              /usr/local/escapes
+              /usr/local/config_model
+              /usr/local/lib
+             );
+########################################
+
+
+# Make sure we've got the environment variables we need
+my $libvar = $arch . "_LIBPATH";
+my $libpath = $ENV{$libvar};
+
+my $binvar = $arch . "_BINPATH";
+my $binpath = $ENV{$binvar};
+
+chomp ($view = `/usr/atria/bin/cleartool pwv -s`);
+
+if (!defined($filename))
+{
+    # No filename specified, so write to STDOUT
+    #
+    *OUTFILE = *STDOUT;
+}
+else
+{
+    open OUTFILE, ">$filename" or die "Could not open $filename\n";
+}
+
+
+if ((defined $ENV{APP_RELEASE}) || (defined $ENV{ntmkbw_APP_RELEASE}))
+{
+    $APP_RELEASE = defined $ENV{APP_RELEASE} ? $ENV{APP_RELEASE}
+                                             : $ENV{ntmkbw_APP_RELEASE};
+
+    # Set up variables matching the dynamic path macro rules in pkgtool
+    my @apps;
+    push @apps, "ca" if ($ENV{ntmkbw_PRODUCTID} eq "cavse");
+    push @apps, "ssg" if ($ENV{ntmkbw_PRODUCTID} eq "ssg");
+    push @apps, (split / +/, $ENV{USE_APPNAMES});
+
+    #
+    # Generate application mappings
+    #
+    foreach my $app (@apps)
+    {
+        my $runtime = "/opt/nortel/$app/$APP_RELEASE/$arch";
+
+        printMapping $arch, $view, "$runtime/bin", $binpath;
+        printMapping $arch, $view, "$runtime/bin/ee", $binpath;
+        printMapping $arch, $view, "$runtime/lib", $libpath;
+    }
+}
+
+foreach my $runtime (@binDirs)
+{
+    printMapping $arch, $view, $runtime, $binpath;
+}
+
+foreach my $runtime (@libDirs)
+{
+    printMapping $arch, $view, $runtime, $libpath;
+}
+
+#
+# Finish the file
+#
+if (defined($arglist{filename}))
+{
+    close OUTFILE;
+}
+

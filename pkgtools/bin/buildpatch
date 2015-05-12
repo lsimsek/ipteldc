@@ -1,0 +1,3396 @@
+#!/usr/bin/perl
+###############################################################
+###############################################################
+
+#     #                                                   ###
+#  #  #    ##    #####   #    #     #    #    #   ####    ###
+#  #  #   #  #   #    #  ##   #     #    ##   #  #    #   ###
+#  #  #  #    #  #    #  # #  #     #    # #  #  #         #
+#  #  #  ######  #####   #  # #     #    #  # #  #  ###
+#  #  #  #    #  #   #   #   ##     #    #   ##  #    #   ###
+ ## ##   #    #  #    #  #    #     #    #    #   ####    ###
+
+###############################################################
+#
+# This file should only be updated by the USM team.
+# http://wiki.us.nortel.com/twiki/bin/view/Siren/WhoIsUSM
+#
+# Modifications to this file affect EVERYBODY!
+#
+###############################################################
+#
+# This tool is used for building patches, based on a patch XML file.
+#
+
+use strict;
+
+use XML::DOM;
+use Getopt::Long;
+use File::Basename;
+use threads;
+use IO::Handle;
+
+BEGIN {
+    if ((defined($ENV{patch_VSE_PATCH_TOOLS_PATH})) && 
+        ($ENV{patch_VSE_PATCH_TOOLS_PATH} ne ""))
+    {
+        if (! -d "$ENV{patch_VSE_PATCH_TOOLS_PATH}")
+        {
+            die "The $ENV{patch_VSE_PATCH_TOOLS_PATH} is not a directory\n\n";
+        }
+        unshift @INC, $ENV{'patch_VSE_PATCH_TOOLS_PATH'};
+    }
+    else
+    {
+        die "The VpUtils library path: patch_VSE_PATCH_TOOLS_PATH env variable must be defined\n\n";
+    }
+}
+
+use VpUtils::VpGenUtils;
+use VpUtils::VpPatchDep;
+use VpUtils::VpPatchXml;
+
+#
+# Declare globals
+#
+
+# Command line arguments
+use vars qw (
+    $filename
+    $ncglhaView
+    $ncglhaIntView
+    $ncglwrsDir
+    $buildVersion
+    $loadbuild
+    $ncglhaLoadbuild
+    $outputDir
+    $overrideVersion
+    $allowIncompleteTargets
+    $initrd
+    $logdir
+    $updateVersionFile
+    $D
+    $justAdmindata
+    $patchdir
+    $remote
+    $acsmBuild
+    $skipClean
+    $resetTimestamps
+    $skipSyncInclude
+    $multiPassBuild
+    $acsmFullBuildFile
+    $pls_context_id
+    $help
+);
+
+# Constants (and semi-constants...)
+use vars qw (
+    $ct
+    $defaultFam
+    $ncglhaSetup
+    $ncglhaObjpath
+    $neu
+    $tmpdir
+    $xmlValidator
+    $mungeEm
+
+    $flagNotStarted
+    $flagInProgress
+    $flagFailed
+    $flagCompleted
+
+    @allfamilies
+    @alltargets
+    @requiredEnvVariables
+    @requiredNcglEnvVariables
+
+    %supportedFamilies
+    %supportedTargets
+    %validFT
+
+    $pkgtoolBinDir
+    $pkgtoolConfigDir
+
+);
+
+# Globals
+use vars qw (
+    $invalidTargetFound
+    $ncglhaGroup
+    $pkgtoolVersion
+    $lastProgressFlagPrefix
+    $firstNcglHaBuild
+    $firstCmnPkg
+    $initrdTargets
+    $patchType
+    $numParcels
+    $sbuild
+    $habuild
+    $txtPatchFlagFile
+
+    @parcels
+    @pkgs
+    @packages
+    @wrsRpms
+    @initrdPatches
+
+    %admindata
+    %built
+    %existingPatches
+    %nclmap
+    %nclPatchMap
+    %nclToFamily
+    %orderCodes
+    %pkgmap
+    %requiredPatches
+    %skip
+
+    %bladeRebootCriteria
+    %appSgRebootCriteria
+    $rebootAllBlades
+    $rebootRequired
+    $rebootCriteriaDefined
+);
+
+# Determine the config dir
+$pkgtoolBinDir = dirname($0);
+$pkgtoolConfigDir = (-d "$pkgtoolBinDir/config")
+                  ? "$pkgtoolBinDir/config"
+                  : "$pkgtoolBinDir/../config";
+
+require "$pkgtoolConfigDir/pkgutils.pm";
+# pkgtoolVersion must be aligned with the other pkgtools
+$pkgtoolVersion = "8.0.3";
+
+# Initialize constants and some globals
+$ct = "/usr/atria/bin/cleartool";
+$defaultFam = "$ENV{ntmkbw_DEFAULTFAM}";
+$neu = "/opt/corp/projects/cmtools/siren_NEU/bin/neu";
+$ncglhaSetup = "export PATH=/bin:/usr/bin; cd /vob/ncgl/loadbuild/ntmk && . ubuild_setup";
+$invalidTargetFound = 0;
+$xmlValidator = (defined $ENV{XML_VALIDATOR_PATH})
+                    ? "$ENV{XML_VALIDATOR_PATH}/bin/validateXml"
+                    : "$ENV{USE_SRC_ROOT}/vobs/lsba_platform_tools/xml_validator/bin/validateXml";
+$mungeEm = "$ENV{USE_SRC_ROOT}/vob/siren/tools/pkgtools/mungeEm";
+
+$flagNotStarted = "notstarted";
+$flagInProgress = "inprogress";
+$flagFailed     = "failed";
+$flagCompleted  = "completed";
+$patchType      = "rpm_patch";
+
+$firstNcglHaBuild = 1;
+$firstCmnPkg = 1;
+$numParcels  = 0;
+
+$logdir = ".";
+$sbuild = "ubuild";
+$habuild = "ubuild";
+
+chomp ($tmpdir = `mktemp -d -p /tmp buildpatch.XXXXXX`);
+if (! -d $tmpdir)
+{
+    die "Unable to create working directory.\n";
+}
+
+#
+# The "END" is a special sub-routine that allows us to do some special handling
+# when the script exits. This is called when either exit or die are called,
+# and gives us a single place where we can clean up the temporary directory.
+# This is analogous to doing a "trap on exit" in bash.
+#
+END
+{
+    my $rc = $?;
+
+    if (-d $tmpdir)
+    {
+        #print "Cleaning up working directory: $tmpdir.\n";
+        `rm -rf $tmpdir`;
+    }
+
+    # Check to see if the last flag has been left as in-progress. If so,
+    # mark it failed.
+    if (-f $lastProgressFlagPrefix.$flagInProgress)
+    {
+        rename $lastProgressFlagPrefix.$flagInProgress,
+               $lastProgressFlagPrefix.$flagFailed;
+    }
+
+    if (-e "$txtPatchFlagFile") 
+    {
+        unlink $txtPatchFlagFile;
+    }
+
+    $? = $rc;
+}
+
+# Catch interrupts to ensure the tmpdir is cleaned.
+# This will result in "die" being called, which in turn will call "END" above.
+use sigtrap qw(die normal-signals);
+
+
+# The following environment variables are required, at a minimum
+#
+@requiredEnvVariables = qw (
+    patch_TARGOBJDIR_PATTERN
+    patch_BLADES_CONFIG
+    USE_PKGMAPFILE
+    USE_NCLMAPFILE
+    USE_NCLVERSION
+    patch_VSE_PATCH_TOOLS_PATH
+    ntmkbw_DEFAULTFAM
+);
+
+# The following environment variables are required only when one or more
+# of the packages are from NCGLHA
+#
+@requiredNcglEnvVariables = qw (
+    patch_NCGLHA_TARGOBJDIR_PATTERN
+);
+
+# Default arguments
+$buildVersion        = $ENV{'patch_FC_BUILDVERSION'};
+$loadbuild           = $ENV{'patch_FC_LOADBUILD'};
+$ncglhaLoadbuild     = $ENV{'patch_FC_NCGLHA_LOADBUILD'};
+$outputDir = ".";
+
+#
+# showHelp:
+#
+#    Display the help message
+#
+sub showHelp
+{
+    print STDERR <<OUT;
+$0 (version $pkgtoolVersion)
+
+Arguments:
+    --xmlfile <arg>              : your patch XML file
+    --ncglha-view <arg>          : view to use for building ncglha pkgs
+    --ncglwrs-pkgdir <arg>       : directory where wrs rpms can be found
+    --build-version <arg>        : ie. 3.0.0.vse30usmpatchingSDS
+    --loadbuild <arg>            : ie. vse_3.0_usm_patching_SDS_bq
+    --ncglha-loadbuild <arg>     : NCGL build
+    --output <arg>               : output directory for patch
+    --override-version <arg>     : specify patch version for each package (ie. 99)
+    --allow-incomplete-targets   : incomplete targets lists do not cause failure
+    --initrd                     : include an initrd patch in the build
+    --logdir <arg>               : write build output to a logdir, along with
+                                   progress flags. Default is current directory.
+    --update-version-file        : automatically update the version file
+                                   upon success (should only be used by eBuild,
+                                   unless using a private version file)
+    --D                          : use a local sysroot for builds. This option
+                                   should only be used for testing patches
+                                   that include thirdparty packages, and
+                                   require that the user has already setup the
+                                   local sysroot.
+    --generate-admindata         : skip the compile stage and just produce
+                                   an admindata file. Used to aid in building
+                                   patches that require manual steps.
+    --patchdir <arg>             : directory to search for pre-existing patches
+                                   when building initrd.
+    --remote                     : use 'rsbuild' to build remotely.
+    --acsm-build-num <arg>       : acsm build needs buildNum as parameter.
+    --skip-clean                 : if this is specified, compile dir clean is
+                                   not done for all except 3rdparty,ncglwrs pkg
+    --reset-timestamps          : if this is specified, 
+                                   the timestamps of the affected objects are reset 
+                                   to 'Jan  1  2000' to brute force all libs/bins
+                                   to be rebuilt without cleaning them
+                                   (for all except 3rdparty,ncglwrs pkg)
+    --multi-pass-build           : if specified, will attempt build # of compile dirs + 1
+                                   times on compile dirs, if compileDir>1
+    --skip-sync-include          : if specified, will skip syncInclude step.
+    --ncglha-int-view            : Used only by eBuild. This option provides
+                                   an integration view for the NCGLHA layer,
+                                   which will be used to create a baseline.
+                                   If this option is specified, the build
+                                   view will also be rebased.
+OUT
+    exit 1;
+}
+
+#
+# announce:
+#
+#    This subroutine is used for displaying messages to the console with
+#    a timestamp.
+#
+# Parameters:
+#    message string
+#
+sub announce($)
+{
+    my $msg = shift;
+    my @now = localtime;
+    printf "%02d:%02d:%02d - %s",
+           $now[2], $now[1], $now[0], $msg;
+}
+
+
+# runCmdExitOnFailure:
+#
+#    This subroutine will run a command, displaying the output.
+#    If the command fails, it will exit the script completely, with
+#    an error message provided as an argument.
+#
+# Parameters:
+#    log file handle
+#    brief command description, used if command fails to run
+#    command failure error message, used if command returns non-0 status
+#    command format string, passed to sprintf
+#    optional args, according to format string
+#
+sub runCmdExitOnFailure
+{
+    my $logFH = shift;
+    my $title = shift;
+    my $errorMsg = shift;
+    my $format = shift;
+
+    my $cmd = sprintf $format, @_;
+
+    runCmd($logFH,
+           $title,
+           $errorMsg,
+           $cmd);
+    my $rc = $? >> 8; # must shift $? right by 8 if using in exit()
+    if ($rc != 0)
+    {
+        print STDERR $errorMsg;
+        return ($rc) if (threads->tid() != 0);
+        exit ($rc);
+    }
+
+    return 0;
+}
+
+
+#
+# waitForThreads
+#
+#    Waits for completion of all threads, and returns a count of the number
+#    of threads that returned with a non-zero status.
+#
+sub waitForThreads
+{
+    my $errors = 0;
+    for my $thr (threads->list())
+    {
+        my $rc = $thr->join();
+        $errors++ if ($rc != 0);
+    }
+    return $errors;
+}
+
+#
+# setupGlobals:
+#
+#   This function sets up some of the global variables that are dependent
+#   on which layer we're in.
+#
+sub setupGlobals
+{
+    # Test for required environment variables
+    my @missingVars;
+
+    for my $v (@requiredEnvVariables)
+    {
+        if (! $ENV{$v})
+        {
+            push (@missingVars, $v);
+        }
+    }
+
+    if ($ENV{'ntmkbw_PRODUCTID'} =~ m/^[Ss]iren$/)
+    {
+        # In the VSE layer, we should also have the NCGL vars
+        for my $v (@requiredNcglEnvVariables)
+        {
+            if (! $ENV{$v})
+            {
+                push (@missingVars, $v);
+            }
+        }
+    }
+
+    if (scalar @missingVars != 0)
+    {
+        print STDERR "The following required environment variables have not been set:\n";
+        for my $v (@missingVars)
+        {
+            print STDERR "\t$v\n";
+        }
+
+        exit (1);
+    }
+
+    # Get the list of all families and targets
+    open PECMAP, "$pkgtoolConfigDir/pecmap.list"
+        or die "Unable to open $pkgtoolConfigDir/pecmap.list";
+    while (<PECMAP>)
+    {
+        chomp;
+        s/#.*//;
+        if (/^[^:]+:[^:]+:[^:]+:([^:]+):([^:]+):/)
+        {
+            my $family = $1;
+            my $target = $2;
+            $validFT{$family}{$target}++;
+        }
+    }
+    close PECMAP;
+
+    #
+    # Determine the list of supported families and targets 
+    # from the *.in configuration files.
+    #
+    for my $family (keys %validFT)
+    {
+        my $infile = $ENV{'patch_BLADES_CONFIG'} . "/fam_" . $family . ".in";
+        $supportedFamilies{$family}++ if (-f $infile);
+
+        for my $target (keys %{$validFT{$family}})
+        {
+            $infile = $ENV{'patch_BLADES_CONFIG'} . "/". $target . "_" . $family . ".in";
+            $supportedTargets{$target} = $family if (-f $infile);
+        }
+
+    }
+
+    @allfamilies = sort keys %supportedFamilies;
+    @alltargets = sort keys %supportedTargets;
+
+    if (scalar @allfamilies == 0)
+    {
+        print STDERR "No .in files were found in $ENV{'patch_BLADES_CONFIG'}.\n";
+        print STDERR "Please check the patch_BLADES_CONFIG variable.\n";
+        exit (1);
+    }
+
+    if ($ncglhaView)
+    {
+        # Get the OBJPATH variable for the specified NCGL view only if 
+        #NCGLHA_OBJPATH Env variable not set. Reason is: Ebuild uses
+        #OBJPATH on the lan (not in view)
+        $ncglhaObjpath = (defined $ENV{'NCGLHA_OBJPATH'} && $ENV{'NCGLHA_OBJPATH'}) 
+                       ? $ENV{'NCGLHA_OBJPATH'} 
+                       : "/vob/ncgl/loadbuild/DOs";
+
+        $ncglhaSetup .= "; export OBJPATH=$ncglhaObjpath";
+    }
+
+    VpUtils::VpPatchDep::queryIgnorePatches(\%skip);
+
+    if (defined $ENV{'patch_RPM_PATCHVER_FILE'} && $ENV{'patch_RPM_PATCHVER_FILE'})
+    {
+        %built = VpUtils::VpPatchDep::read_rpm_version_file($ENV{'patch_RPM_PATCHVER_FILE'}, 
+                                                            $buildVersion,
+                                                            \%existingPatches);
+    }
+    $txtPatchFlagFile = `dirname $ENV{'USE_PKGMAPFILE'}`;
+    chomp($txtPatchFlagFile);
+    $txtPatchFlagFile .= "/txt_patch_build";
+    unlink("$txtPatchFlagFile");
+    $acsmFullBuildFile = "${logdir}/ACSM_FullBuild.txt";
+    if (-f "${acsmFullBuildFile}")
+    {
+        unlink "${acsmFullBuildFile}";
+    }
+}
+
+
+#
+# setProgressFlag:
+#
+#    Set the specified progress flag
+#
+sub setProgressFlag($$$)
+{
+    my $pkgname  = shift;
+    my $pkgver   = shift;
+    my $progress = shift;
+
+    my $dir = $logdir;
+
+    my $flagPrefix = $dir . "/" . $pkgname . "_" . $pkgver . "_";
+    my $flag       = $flagPrefix . $progress;
+
+    `rm $flagPrefix* 2>/dev/null ; touch $flag`;
+
+    $lastProgressFlagPrefix = $flagPrefix;
+}
+
+#
+# parseAdmindata:
+#
+#    Parse the ADMINDATA element from the parsed XML
+#
+sub parseAdmindata 
+{
+    my $data = shift;
+    #
+    # The ADMINDATA node is structured with child element nodes, which in turn
+    # contain child nodes themselves. We're interested in the "grandchild"
+    # text nodes, as these would be the values we're looking for.
+    #
+    # For example, in the following XML snippet:
+    #    <ADMINDATA>
+    #       <PATCH_ID>dpenney.1</PATCH_ID>
+    #    </ADMINDATA>
+    #
+    # <ADMINDATA> is the node passed into this subroutine.
+    # <PATCH_ID> is the first child ELEMENT_NODE we see, and its
+    # child TEXT_NODE has the value "dpenney.1"
+    #
+    for my $node ($data->getChildNodes)
+    {
+        if (($node->getNodeType == ELEMENT_NODE) && ($node->hasChildNodes))
+        {
+            for my $child ($node->getChildNodes)
+            {
+                if ($child->getNodeType == TEXT_NODE)
+                {
+                    $admindata{$node->getNodeName} = $child->getNodeValue;
+                }
+            }
+        }
+    }
+}
+
+#
+# parseBuildOpts:
+#
+#    Parse the BUILD_OPTIONS element from the parsed XML
+#
+sub parseBuildOpts
+{
+    my $data = shift;
+    #
+    # The BUILD_OPTIONS node is structured in the same manner as ADMINDATA.
+    # See parseAdmindata for more details.
+    #
+    for my $node ($data->getChildNodes)
+    {
+        if (($node->getNodeType == ELEMENT_NODE) && ($node->hasChildNodes))
+        {
+            for my $child ($node->getChildNodes)
+            {
+                if ($child->getNodeType == TEXT_NODE)
+                {
+                    if ($node->getNodeName eq "GENERATE_ADMINDATA_ONLY")
+                    {
+                        if ($child->getNodeValue eq "Y")
+                        {
+                            $justAdmindata = 1;
+                        }
+                    }
+                    elsif ($node->getNodeName eq "ALLOW_INCOMPLETE_TARGETS")
+                    {
+                        if ($child->getNodeValue eq "Y")
+                        {
+                            $allowIncompleteTargets = 1;
+                        }
+                    }
+                    elsif ($node->getNodeName eq "OVERRIDE_VERSION")
+                    {
+                        $overrideVersion = $child->getNodeValue;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+#
+# determineVersion:
+#
+#     Determines the next version fo the specified parcel, and updates
+#     requiredPatches list, if appropriate.
+#
+sub determineVersion
+{
+    my $pkgname = shift;
+
+    my $newVersion;
+
+    # Determine version information.
+    # Check for the highest version in the loadbuild version file.
+    my @versions = VpUtils::VpGenUtils::sortHashByKeyDescendingNum($built{$pkgname}{$buildVersion});
+    if (scalar @versions == 0)
+    {
+        # This is a new package
+        $newVersion = 0;
+    }
+    else
+    {
+        # Increment the highest build version.
+        $newVersion = $versions[0] + 1;
+
+        # Determine dependencies, based on the highest (non-skipped) version
+        for my $num (@versions)
+        {
+            if ((defined $built{$pkgname}{$buildVersion}{$num}) &&
+                ($built{$pkgname}{$buildVersion}{$num} ne "")    &&
+                (!defined $skip{uc($built{$pkgname}{$buildVersion}{$num})}))
+            {
+                my $req = $built{$pkgname}{$buildVersion}{$num};
+                $requiredPatches{$req}++;
+                mapPatchToNcl($ENV{USE_PKGMAPFILE}, \%pkgmap, $req, $pkgname, \%nclPatchMap);
+                last;
+            }
+        }
+    }
+
+    if (defined $overrideVersion)
+    {
+        # The override version should not be less than the calculated version
+        if ($overrideVersion < $newVersion)
+        {
+            die "The expected patch version for $pkgname is $newVersion. The specified version override value must be at least that value.\n";
+        }
+        $newVersion = $overrideVersion;
+    }
+
+    my $parcelVer = $buildVersion . "." . $newVersion;
+    return $parcelVer;
+}
+
+#
+# parseParcel:
+#
+#    Parse an individual PARCEL element from the parsed XML, validating as
+#    much as possible.
+#
+sub parseParcel
+{
+    my $parcel = shift;
+    my %attr;
+
+    #
+    # The PARCEL node is structured with child element nodes, which in turn
+    # contain child nodes themselves. We're interested in the "grandchild"
+    # text nodes, as these would be the values we're looking for.
+    #
+    # For example, in the following XML snippet:
+    #    <PARCEL>
+    #       <PARCEL_NAME>usm_swami</PARCEL_NAME>
+    #       <COMPILE_DIR>/vob/siren/sw_mgmt/swami</COMPILE_DIR>
+    #       <PACKAGE_DIR>/vob/siren/sw_mgmt/swami/pkg</PACKAGE_DIR>
+    #       <TARGET>common</TARGET>
+    #    </PARCEL>
+    #
+    # <PARCEL> is the node passed into this subroutine.
+    # <PARCEL_NAME> is the first child ELEMENT_NODE we see, and its
+    # child TEXT_NODE has the value "/vob/siren/sw_mgmt/swami"
+    #
+    for my $node ($parcel->getChildNodes)
+    {
+        if (($node->getNodeType == ELEMENT_NODE) && ($node->hasChildNodes))
+        {
+            for my $child ($node->getChildNodes)
+            {
+                if ($child->getNodeType == TEXT_NODE)
+                {
+                    my $nodename = $node->getNodeName;
+
+                    if ($nodename eq "ALT_PACKAGE_DIR")
+                    {
+                        my $family = $node->getAttribute("family");
+                        my $target = $node->getAttribute("target");
+                        $attr{$nodename}{$family}{$target} = $child->getNodeValue;
+                    }
+                    else
+                    {
+                        $attr{$node->getNodeName} = $child->getNodeValue;
+                    }
+                }
+            }
+        }
+    }
+
+    my $pkgname = $attr{'PARCEL_NAME'};
+    if (!defined $pkgname)
+    {
+        # PARCEL_NAME should always be defined
+        die "PARCEL_NAME undefined";
+    }
+
+    # Now validate the contents
+    my $pkgdir = $attr{'PACKAGE_DIR'};
+
+    # Determine the source layer
+    my $layer = determineLayer($ENV{USE_PKGMAPFILE}, \%pkgmap, $pkgname);
+
+    # First, check the source of the package. If it's NCGLHA, then ncglha-view
+    # must be specified. If NCGLWRS, ncglwrs-pkgdir must be specified.
+    if ($layer eq "NCGLHA")
+    {
+        if (!$ncglhaView || !$ncglhaLoadbuild)
+        {
+            die "$pkgname is an NCGLHA package. The --ncglha-view and --ncglha-loadbuild options are required.\n";
+        }
+
+        $attr{'buildfunc'} = \&runNcglHaBuild;
+
+        # Validate the PACKAGE_DIR field
+        `$ct setview -exec 'cat $pkgdir/definition.pkg' $ncglhaView 2>/dev/null | grep -q "<pkg_name>$pkgname</pkg_name>"`;
+        if ($? != 0)
+        {
+            die "The PACKAGE_DIR specified for $pkgname is incorrect.\n";
+        }
+
+        for my $family (keys %{$attr{'ALT_PACKAGE_DIR'}})
+        {
+            for my $target (keys %{$attr{'ALT_PACKAGE_DIR'}{$family}})
+            {
+                my $altdir = $attr{'ALT_PACKAGE_DIR'}{$family}{$target};
+
+                `$ct setview -exec 'cat $altdir/definition.pkg' $ncglhaView 2>/dev/null | grep -q "<pkg_name>$pkgname</pkg_name>"`;
+                if ($? != 0)
+                {
+                    die "The ALT_PACKAGE_DIR($family/$target) specified for $pkgname is incorrect.\n";
+                }
+            }
+        }
+    }
+    elsif ($layer eq "NCGLWRS")
+    {
+        if (!$ncglwrsDir)
+        {
+            die "$pkgname is an NCGLWRS package. The --ncglwrs-pkgdir option is required.\n";
+        }
+
+        $attr{'buildfunc'} = \&runNcglWrsBuild;
+    }
+    elsif (defined($acsmBuild) )
+    {
+        $attr{'buildfunc'} = \&runACSMBuild;
+    }
+    else
+    {
+        $attr{'buildfunc'} = \&runCommonBuild;
+
+        # Validate the PACKAGE_DIR field
+        `grep -q "<pkg_name>$pkgname</pkg_name>" $pkgdir/definition.pkg 2>/dev/null`;
+        if ($? != 0)
+        {
+            die "The PACKAGE_DIR specified for $pkgname is incorrect.\n";
+        }
+
+        for my $family (keys %{$attr{'ALT_PACKAGE_DIR'}})
+        {
+            for my $target (keys %{$attr{'ALT_PACKAGE_DIR'}{$family}})
+            {
+                my $altdir = $attr{'ALT_PACKAGE_DIR'}{$family}{$target};
+
+                `grep -q "<pkg_name>$pkgname</pkg_name>" $altdir/definition.pkg 2>/dev/null`;
+                if ($? != 0)
+                {
+                    die "The ALT_PACKAGE_DIR($family/$target) specified for $pkgname is incorrect $altdir.\n";
+                }
+            }
+        }
+
+        # If it's a thirdparty build, we need a different build function
+        if ($pkgdir =~ m:/vob/siren/thirdparty:)
+        {
+            $attr{'buildfunc'} = \&runThirdpartyBuild;
+        }
+
+        # THIS CODE should never be run within an NCGL view 
+        #           - so it should not be moved out of this block.
+        # Set the patch type to baseline_patch if there is a baseline parcel.
+        # Return error if baseline parcel is mixed with other regular or baseline parcels.
+        my $parcelType = getParcelType("$pkgdir/definition.pkg");
+        if ($parcelType eq "parcel_baseline")
+        {
+            if ($numParcels > 1)
+            {
+                die "Baseline parcels can not be included in the same xml file with other regular parcels";
+            }
+            $patchType = "baseline_patch";
+        }
+    }
+
+    # Generate the list of families to build for this package
+    # First, get all the NCLs associated with this package, then map those
+    # to the families.
+    # We can't just use the "family" in the pkgmap... it's the NCLs that
+    # determine what's actually delivered.
+    #
+    my %familyList;
+    my %targetList;
+    for my $family (keys %{$pkgmap{$pkgname}{$layer}})
+    {
+        for my $target (keys %{$pkgmap{$pkgname}{$layer}{$family}})
+        {
+            for my $role (keys %{$pkgmap{$pkgname}{$layer}{$family}{$target}})
+            {
+                for my $pec (keys %{$pkgmap{$pkgname}{$layer}{$family}{$target}{$role}})
+                {
+                    my $ncl = selectNcl(\%pkgmap,
+                                        \%nclmap,
+                                        $pkgname,
+                                        $layer,
+                                        $family,
+                                        $target,
+                                        $role,
+                                        $pec);
+
+                    next if (!defined $ncl);
+
+                    $attr{'NCLS'}{$ncl}++; # For use in generating admindata
+
+                    if ($target eq "*")
+                    {
+                        $familyList{$family}++;
+                    }
+                    else
+                    {
+                        $targetList{$target}++;
+                    }
+
+                    # Since we're here, let's grab the final pkgname too
+                    push @{$attr{'finalname'}{$family}{$target}}, $pkgmap{$pkgname}{$layer}{$family}{$target}{$role}{$pec}{'NAME'};
+                    if ($attr{'PARCEL_REQUIRES_REBOOT'} eq "Y")
+                    {
+                        $bladeRebootCriteria{"$family:$target:$role"}++;
+                    }
+                }
+            }
+        }
+    }
+    
+    @{$attr{'families'}} = () unless defined @{$attr{'families'}};
+    @{$attr{'targets'}} = () unless defined @{$attr{'targets'}};
+    
+    for my $family (sort keys %familyList)
+    {
+        push @{$attr{'families'}}, $family;
+    }
+
+    for my $target (sort keys %targetList)
+    {
+        push @{$attr{'targets'}}, $target;
+    }
+
+    # Get the version
+    $attr{'version'} = determineVersion($pkgname);
+
+    # Push the attributes hash onto the global packages array
+    push @pkgs, \%attr;
+    push @packages, $pkgname;
+}
+
+#
+# parseCriteria:
+#
+#    Parse an individual REBOOT_CRITERIA element from the parsed XML
+#
+sub parseCriteria
+{
+    my $data = shift;
+
+    for my $node ($data->getChildNodes)
+    {
+        if (($node->getNodeType == ELEMENT_NODE) && ($node->hasChildNodes))
+        {
+            if ($node->getNodeName eq "ALL_BLADES")
+            {
+                for my $child ($node->getChildNodes)
+                {
+                    if ($child->getNodeType == TEXT_NODE)
+                    {
+                        if ($child->getNodeValue eq "Y")
+                        {
+                            $rebootAllBlades = "Y";
+                        }
+                    }
+                }
+            }
+            elsif ($node->getNodeName eq "APP_SERVICE_GROUP")
+            {
+                for my $child ($node->getChildNodes)
+                {
+                    if ($child->getNodeType == TEXT_NODE)
+                    {
+                        $appSgRebootCriteria{$child->getNodeValue}++;
+                    }
+                }
+            }
+            elsif ($node->getNodeName eq "BLADE_CRITERIA")
+            {
+                if (! $node->hasChildNodes)
+                {
+                    die "BLADE_CRITERIA specified in input XML without sub-fields";
+                }
+
+                my $family = "*";
+                my $target = "*";
+                my $role   = "*";
+
+                for my $bladeCriteria ($node->getChildNodes)
+                {
+                    for my $child ($bladeCriteria->getChildNodes)
+                    {
+                        if ($child->getNodeType == TEXT_NODE)
+                        {
+                            if ($bladeCriteria->getNodeName eq "FAMILY")
+                            {
+                                $family = $child->getNodeValue;
+                            }
+                            elsif ($bladeCriteria->getNodeName eq "TARGET")
+                            {
+                                $target = $child->getNodeValue;
+                            }
+                            elsif ($bladeCriteria->getNodeName eq "ROLE")
+                            {
+                                $role = $child->getNodeValue;
+                            }
+                        }
+                    }
+                }
+
+                $bladeRebootCriteria{"$family:$target:$role"}++;
+            }
+        }
+    }
+}
+
+#
+# buildNcglWrsPackage
+#
+sub buildNcglWrsPackage($$$$)
+{
+    my $logFH = shift;
+    my $family = shift;
+    my $target = shift;
+    my $pkgref = shift;
+
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $targetName = ($target eq "*") ? "fam" : $target;
+
+    announce "  Building $family/$targetName for $pkgname.\n";
+
+    # We need to find the correct WRS package
+    my $rpmfile;
+    my $search = "images/$family/" . $targetName . "_$family/tpkg/.*/" . quotemeta($pkgname) . "-.*\.rpm";
+    my @filelist = grep { m#$search# } @wrsRpms;
+
+    $search = "_$targetName" . "_[^/]*_$family/pkgs/" . quotemeta($pkgname) . "-.*\.rpm";
+    push @filelist, (grep { m#$search# } @wrsRpms);
+
+    for my $f (@filelist)
+    {
+        # Query each possible RPM individually to check the package name,
+        # in order to avoid any possible substring matches.
+        # We can't use --queryformat '%{NAME}', as it appears the WRS
+        # packages don't have this attribute set, so we'll do something
+        # a little more convoluted.
+        my $name = `rpm -qip $f | grep '^Name *:' | sed "s/^Name *: \\([^ ]*\\).*/\\1/"`;
+        chomp $name;
+
+        if ($pkgname eq $name)
+        {
+            $rpmfile = $f;
+            last;
+        }
+    }
+
+    if (! -f $rpmfile)
+    {
+        setProgressFlag($pkgname, $pkgver, $flagFailed);
+        close $logFH;
+        die "Failed to find $family/$targetName $pkgname in $ncglwrsDir."
+    }
+
+    # Copy the rpm to the tmpdir, and update the variable with the new path
+    `cp $rpmfile $tmpdir/`;
+    $rpmfile =~ s:.*/:$tmpdir/:;
+
+    # Now to run mungeEm to build the parcel.
+    runCmdExitOnFailure(
+           $logFH,
+           "mungeEm",
+           "NCGLWRS build of $pkgname failed to munge for $family/$targetName. Aborting...\n",
+           "$mungeEm -a $family -t $targetName -f $rpmfile -o $tmpdir 2>&1");
+
+    # Add the parcel file to the filelist
+    for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+    {
+        my $pattern = sprintf "%s/%s-%s-*.parcel",
+                              $tmpdir,
+                              $finalname,
+                              $pkgref->{'version'};
+        my @pfile = glob($pattern);
+        if (! -f $pfile[0])
+        {
+            setProgressFlag($pkgname, $pkgver, $flagFailed);
+            print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+            close $logFH;
+            die "Unable to find parcel file($pfile[0]) for $family/$targetName of $pkgname";
+        }
+
+        push @parcels, $pfile[0];
+    }
+}
+
+#
+# runNcglWrsBuild:
+#
+#    This subroutine handles the build for NCGLWRS parcels. The actual
+#    rpm build is done outside this script. All we're doing here is munging
+#    the rpm into a parcel.
+#
+sub runNcglWrsBuild
+{
+    my $pkgref = shift;
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    if (scalar @wrsRpms == 0)
+    {
+        # Because we're using a recursive search to find the rpms, it could
+        # take a long time. Rather than run the command every time, we'll
+        # run it once to get a complete list of rpms, and cache it.
+        open FIND, "find $ncglwrsDir/images/*/*/tpkg $ncglwrsDir/*/pkgs -name '*.rpm' 2>/dev/null |"
+            or die "Failed to run find command";
+        while (my $file = <FIND>)
+        {
+            chomp $file;
+            push @wrsRpms, $file;
+        }
+        close FIND;
+
+        die "Failed to find any rpm files in $ncglwrsDir. Aborting...\n"
+            if (scalar @wrsRpms == 0);
+    }
+        
+    # Get the list of families and targets.
+    #
+    my @families = @{$pkgref->{'families'}};
+    my @targets = @{$pkgref->{'targets'}};
+
+    my $logFilename = $logdir . "/" . $pkgname . "_" . $pkgver . ".txt";
+    open my $logFH, ">$logFilename"
+        or die "Unable to create log file: $logFilename\n";
+
+    setProgressFlag($pkgname, $pkgver, $flagInProgress);
+
+    $ENV{'VSE_RELEASE'}  = $ENV{'ntmkbw_VSE_RELEASE'};
+    $ENV{'PKG_VERSION'}  = $pkgver;
+    $ENV{'PRODUCTID'}    = "Siren";
+    $ENV{'PROD_RELEASE'} = $ENV{'VSE_RELEASE'};
+
+    announce "Building $pkgname, version $pkgver.\n";
+
+    # Run the build for each family
+    #
+    for my $family (@families)
+    {
+        my $target = "*";
+        buildNcglWrsPackage($logFH, $family, $target, $pkgref);
+    }
+
+    # Run the build for each target
+    #
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+        buildNcglWrsPackage($logFH, $family, $target, $pkgref);
+    }
+
+    delete $ENV{'VSE_RELEASE'};
+    delete $ENV{'PKG_VERSION'};
+    delete $ENV{'PRODUCTID'};
+    delete $ENV{'PROD_RELEASE'};
+
+    setProgressFlag($pkgname, $pkgver, $flagCompleted);
+    close $logFH;
+}
+
+sub closeLogsFT(\%)
+{
+    my $logs = shift;
+    for my $family (keys %$logs)
+    {
+        for my $target (keys %{$$logs{$family}})
+        {
+            close $$logs{$family}{$target};
+        }
+    }
+}
+
+sub cleanNcglHaPackage($$$$$)
+{
+    my $logFH = shift;
+    my $buildcmd = shift;
+    my $family = shift;
+    my $target = shift;
+    my $pkgref = shift;
+
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+
+    my $targetName = ($target eq "*") ? "fam" : $target;
+
+    for my $dir (split /\s+/, $pkgref->{'COMPILE_DIR'})
+    {
+        async
+        {
+            if ($resetTimestamps)
+            {
+                # Setting OBJPATH to a location outside the vob will have 
+                # consequences for incremental building. 
+                # Specifically, clearmake will not be able to generate 
+                # config records for the derived objects and 
+                # this means re-builds may not build everything as expected. 
+                # For example, a change to a header file will not re-generate 
+                # an object file associated with a source file including the header file.
+                # To avoid this problem, we will do an extra step where we
+                # force the affected library timestamps to be changed to a
+                # value earlier so that the build will rebuild them. 
+                runCmdInView(
+                       $ncglhaView,
+                       $logFH,
+                       "NCGL reset timestamps",
+                       "NCGLHA build resettimestamp of $pkgname failed for $family/$targetName. Aborting...\n",
+                       "$ncglhaSetup ; cd %s && $buildcmd resettimestamp 2>&1",
+                       $dir);
+            }
+            else
+            {
+                runCmdInView(
+                       $ncglhaView,
+                       $logFH,
+                       "NCGL clean",
+                       "NCGLHA build clean of $pkgname failed for $family/$targetName. Aborting...\n",
+                       "$ncglhaSetup ; cd %s && $buildcmd clean 2>&1",
+                       $dir);
+            }
+            return $? if ($? != 0);
+        };
+    }
+}
+
+sub buildNcglHaPackage($$$$$$)
+{
+    my $logFH = shift;
+    my $buildcmd = shift;
+    my $family = shift;
+    my $target = shift;
+    my $pkgref = shift;
+    my $VSE_RELEASE = shift;
+
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $targetName = ($target eq "*") ? "fam" : $target;
+
+    announce "  Building $family/$targetName for $pkgname.\n";
+
+    async
+    {
+        # Run setup
+        for my $dir (split /\s+/, $pkgref->{'COMPILE_DIR'})
+        {
+            runCmdInView(
+                   $ncglhaView,
+                   $logFH,
+                   "NCGL build setup",
+                   "NCGLHA build setup of $pkgname failed for $family/$targetName. Aborting...\n",
+                   "$ncglhaSetup ; cd %s && $buildcmd setup 2>&1",
+                   $dir);
+            return $? if ($? != 0);
+        }
+
+        # Run compile
+        # if there are multiple compile dir's,
+        # we have to run compile # of compile dirs + 1 times
+        # and not exit on failure in any compiles but the last pass. 
+        # This is done only if $multiPassBuild is set
+        my @compileDirList = split /\s+/, $pkgref->{'COMPILE_DIR'};
+
+        my $numPasses = 1;
+        if ((scalar(@compileDirList) > 1) && ($multiPassBuild) )
+        {
+            $numPasses = scalar(@compileDirList) + 1;
+        }
+        print $logFH "\n\n$pkgname contains " . scalar(@compileDirList) . " compile dirs. Build will be done $numPasses times.\n";
+
+        for (my $counter=1; $counter <= $numPasses; $counter++)
+        {
+            print $logFH "Pass # $counter for $family/$targetName...\n";
+            my $modBldCmd = $buildcmd;
+            #build all files regardless of failure in case of multi
+            #compile dir. Hence use -k in first pass build
+            if ( $counter < $numPasses ) 
+            {
+                $modBldCmd .= " -k"; 
+            }
+            for my $dir (@compileDirList)
+            {
+                my $errMsg="NCGLHA build of $pkgname failed for $family/$target.  Pass - $counter \n";
+                runCmdInView(
+                       $ncglhaView,
+                       $logFH,
+                       "NCGL build - Pass $counter",
+                       $errMsg,
+                       "$ncglhaSetup ; cd %s && $modBldCmd 2>&1",
+                       $dir);
+                if ($? != 0) 
+                {
+                    print STDERR $errMsg;
+                    if ($counter == $numPasses) #final pass, so return failure
+                    {
+                        return $?;
+                    }
+                }
+            }#for my $dir
+        } #for my $counter
+
+        my $pkgdir = $pkgref->{'PACKAGE_DIR'};
+        if ($pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target} ne "")
+        {
+            $pkgdir = $pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target};
+        }
+
+        #Before building pkg, lets run clean on pkg dir to clear up marker files
+        runCmdInView(
+               $ncglhaView,
+               $logFH,
+               "NCGL pkg clean",
+               "Clean package of $pkgname failed for $family/$targetName. Aborting...\n",
+               "$ncglhaSetup ; cd %s && $buildcmd clean 2>&1",
+               $pkgdir);
+        return $? if ($? != 0);
+
+        # Now build the package
+        runCmdInView(
+               $ncglhaView,
+               $logFH,
+               "NCGL build",
+               "NCGLHA build of $pkgname failed for $family/$targetName. Aborting...\n",
+               "$ncglhaSetup ; cd %s && $buildcmd pkg 2>&1",
+               $pkgdir);
+        return $? if ($? != 0);
+
+        # Now to run mungeEm to build the parcel.
+        my $targobjdir = $ENV{'patch_NCGLHA_TARGOBJDIR_PATTERN'};
+        $targobjdir =~ s/::target::/$targetName/g;
+        $targobjdir =~ s/::family::/$family/g;
+
+        my $pkgSuffix = $family;
+        $pkgSuffix .= "_$target" if ($target ne "*");
+
+        my $ncglpkg = $pkgname . "_" . $pkgSuffix . "-" . $pkgref->{'version'} . "-1.i386.rpm";
+
+        #Assumption : if pkgname ends with 64, then we can assume its 64 bit pkg
+        # All the 64 bit ncglha pkg in pkgmap list have this convention
+        my $pkgLen = length($pkgname);
+        my $last2char = substr($pkgname, $pkgLen-2, $pkgLen);
+        if ($last2char eq "64")
+        {
+            $targobjdir .= "64";
+        }
+
+        my $rpmfile = (defined $ENV{'NCGLHA_OBJPATH'}) 
+                      ? "" : "/view/$ncglhaView/";
+        $rpmfile   .= "$ncglhaObjpath/$targobjdir/pkgs/$ncglpkg";
+
+        # In a thread, changes to the environment are not passed to
+        # system() calls, so we need to set it in the command itself.
+        my $envCmd = "export VSE_RELEASE=$VSE_RELEASE";
+        $envCmd .= ";export PKG_VERSION=$pkgref->{'version'}";
+        $envCmd .= ";export PRODUCTID=Siren";
+        $envCmd .= ";export PROD_RELEASE=$VSE_RELEASE";
+
+        runCmdExitOnFailure(
+               $logFH,
+               "mungeEm",
+               "NCGLHA build of $pkgname failed to munge for $family/$targetName. Aborting...\n",
+               "$envCmd;$mungeEm -a $family -t $targetName -f $rpmfile -o $tmpdir 2>&1");
+        return $? if ($? != 0);
+
+    };
+}
+
+#
+# runNcglHaBuild:
+#
+#    This subroutine handles the build for NCGLHA parcels. It builds the
+#    rpm within the specified NCGL view, and then munges the rpm into a parcel
+#
+sub runNcglHaBuild
+{
+    my $pkgref = shift;
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $cmdOutput;
+
+    # Get the list of families.
+    #
+    my @families = @{$pkgref->{'families'}};
+    my @targets  = @{$pkgref->{'targets'}};
+
+    my $logFilename = $logdir . "/" . $pkgname . "_" . $pkgver . ".txt";
+    open my $logFH, ">$logFilename"
+        or die "Unable to create log file: $logFilename\n";
+
+    # Make the log file unbuffered
+    autoflush $logFH;
+
+    # Create logs for the archs
+    my %logs = ();
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $targetName . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $target . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagInProgress);
+
+    if ($ncglhaIntView and ($firstNcglHaBuild != 0))
+    {
+        # Handle baseline creation and rebase
+        $firstNcglHaBuild = 0;
+
+        # First, define the baseline name
+        # This will be something like: ncgl12_patch_wk06_20080205_1632
+        my $blName = `date +"$ENV{'patch_NCGLHA_BASELINE_PREFIX'}_patch_wk\%V_\%Y\%m\%d_\%H\%M"`;
+        chomp $blName;
+
+        # Now create the new baseline. If there are no changes, the baseline
+        # will not be created, but the command will still be successful.
+        announce "Creating NCGLHA baseline.\n";
+        runCmdExitOnFailure(
+               $logFH,
+               "NCGL mkbl",
+               "NCGLHA Baseline creation failed. Aborting...\n",
+               "cd / && $ct setview -exec '$ct mkbl -comment buildpatch -view %s -component ncgl_composite@/vob/ncgl/ncgl_pvob -incremental %s' %s 2>&1",
+               $ncglhaIntView,
+               $blName,
+               $ncglhaIntView);
+
+        # The baseline has been created. Now we need to rebase the build view.
+        announce "Rebasing NCGLHA build view.\n";
+        runCmdExitOnFailure(
+               $logFH,
+               "NCGL rebase",
+               "NCGLHA rebase failed. Aborting...\n",
+               "cd / && $ct setview -exec '$neu rebase-latest -complete' %s 2>&1",
+               $ncglhaView);
+    }
+
+    #
+    # When we run a command using setview -exec, our current environment
+    # is maintained. Unfortunately, our current environment happens to contain
+    # a number of variables intended for the VSE build environment.
+    # So to protect against some unintended consequences, we'll delete the
+    # ntmkbw_ variables temporarily, restoring them after the builds have
+    # completed.
+    #
+    my $VSE_RELEASE = $ENV{'ntmkbw_VSE_RELEASE'};
+
+    my %bakENV;
+    for my $k (grep { /^ntmkbw_/ } keys %ENV)
+    {
+        $bakENV{$k} = $ENV{$k};
+        delete $ENV{$k};
+    }
+    $bakENV{OBJPATH} = $ENV{OBJPATH};
+    delete $ENV{OBJPATH};
+
+    announce "Building $pkgname, version $pkgver.\n";
+
+    my $ncglhaLbOpts = $ENV{'patch_NCGLHA_LB_OPTS'}; 
+    my %lb = ();
+    my %ncglLbOpts = ();
+    my %build = ();
+    for my $family (@allfamilies) # Use allfamilies to setup vars
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        # First, translate ::target:: in the loadbuild
+        $lb{$family}{$target} = $D ? "-D " : " -l $ncglhaLoadbuild";
+        $lb{$family}{$target} =~ s/::family::/$family/g;
+        $lb{$family}{$target} =~ s/::target::/$targetName/g;
+
+        $ncglLbOpts{$family}{$target} = $ncglhaLbOpts;
+        $ncglLbOpts{$family}{$target} =~ s/::family::/$family/g;
+        $ncglLbOpts{$family}{$target} =~ s/::target::/$targetName/g;
+
+        $build{$family}{$target} = "$habuild $lb{$family}{$target} -f $family $ncglLbOpts{$family}{$target} PKG_VERSION=$pkgver";
+    }
+
+    for my $target (@alltargets)
+    {
+        my $family = $supportedTargets{$target};
+
+        # First, translate ::target:: in the loadbuild
+        $lb{$family}{$target} =  $D ? "-D " : " -l $ncglhaLoadbuild";
+        $lb{$family}{$target} =~ s/::family::/$family/g;
+        $lb{$family}{$target} =~ s/::target::/$target/g;
+
+        $ncglLbOpts{$family}{$target} = $ncglhaLbOpts;
+        $ncglLbOpts{$family}{$target} =~ s/::family::/$family/g;
+        $ncglLbOpts{$family}{$target} =~ s/::target::/$target/g;
+
+        $build{$family}{$target} = "$habuild $lb{$family}{$target} -t $target $ncglLbOpts{$family}{$target} PKG_VERSION=$pkgver";
+    }
+
+    unless ($skipClean)
+    {
+        announce "  Cleaning.\n";
+        for my $family (@families)
+        {
+            my $target = "*";
+            cleanNcglHaPackage($logs{$family}{$target},
+                           $build{$family}{$target},
+                           $family,
+                           $target,
+                           $pkgref);
+        }
+
+        for my $target (@targets)
+        {
+            my $family = $supportedTargets{$target};
+
+            cleanNcglHaPackage($logs{$family}{$target},
+                           $build{$family}{$target},
+                           $family,
+                           $target,
+                           $pkgref);
+        }
+
+        if (waitForThreads() > 0)
+        {
+            die "Failed to clean. Aborting...\n";
+        }
+
+    } # end of unless ($skipClean)
+
+    my @altdirs;
+    for my $family (keys %{$pkgref->{'ALT_PACKAGE_DIR'}})
+    {
+        for my $target (keys %{$pkgref->{'ALT_PACKAGE_DIR'}{$family}})
+        {
+            push @altdirs, $pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target};
+        }
+    }
+
+    # Now run the mk. We only need to run this for one arch.
+    announce "  Setting up mk.\n";
+    for my $dir ((split /\s+/, $pkgref->{'COMPILE_DIR'}), $pkgref->{'PACKAGE_DIR'}, @altdirs)
+    {
+        my $target = "*";
+        runCmdInView(
+               $ncglhaView,
+               $logFH,
+               "NCGL mk",
+               "NCGLHA build mk of $pkgname failed. Aborting...\n",
+               "$ncglhaSetup ; cd %s && $build{$defaultFam}{$target} mk 2>&1",
+               $dir);
+    }
+
+    if ($admindata{'TYPE'} eq "txt_patch") 
+    {
+        unless (-e "$txtPatchFlagFile") 
+        {
+            system("touch $txtPatchFlagFile");
+            if ($? == 0) 
+            {
+                print "txt_patch build in progress... \n";
+            }
+            else 
+            {
+                print "Warning - Unable to create file: $txtPatchFlagFile \n"; 
+            }
+        }
+    }
+
+    # Run the build for each family
+    #
+    for my $family (@families)
+    {
+        my $target = "*";
+
+        buildNcglHaPackage($logs{$family}{$target},
+                           $build{$family}{$target},
+                           $family,
+                           $target,
+                           $pkgref,
+                           $VSE_RELEASE);
+    }
+
+    if (waitForThreads() > 0)
+    {
+        die "Failed to build $pkgname. Aborting...\n";
+    }
+
+    # Run the build for each target
+    #
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        buildNcglHaPackage($logs{$family}{$target},
+                           $build{$family}{$target},
+                           $family,
+                           $target,
+                           $pkgref,
+                           $VSE_RELEASE);
+    }
+
+    if (waitForThreads() > 0)
+    {
+        die "Failed to build $pkgname. Aborting...\n";
+    }
+
+    for my $family (@families)
+    {
+        my $target = "*";
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s-%s-*.parcel",
+                                  $tmpdir,
+                                  $finalname,
+                                  $pkgref->{'version'};
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                setProgressFlag($pkgname, $pkgver, $flagFailed);
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                close $logFH;
+                closeLogsFT(%logs);
+                die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s-%s-*.parcel",
+                                  $tmpdir,
+                                  $finalname,
+                                  $pkgref->{'version'};
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                setProgressFlag($pkgname, $pkgver, $flagFailed);
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                close $logFH;
+                closeLogsFT(%logs);
+                die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    for my $k (keys %bakENV)
+    {
+        $ENV{$k} = $bakENV{$k};
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagCompleted);
+
+    close $logFH;
+    closeLogsFT(%logs);
+    return 0;
+}
+
+sub cleanCommonPackage($$$$$)
+{
+    my $logFH = shift;
+    my $buildcmd = shift;
+    my $family = shift;
+    my $target = shift;
+    my $pkgref = shift;
+
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $targetName = ($target eq "*") ? "fam" : $target;
+
+    for my $dir (split /\s+/, $pkgref->{'COMPILE_DIR'})
+    {
+        async
+        {
+            if ($resetTimestamps)
+            {
+                # Setting OBJPATH to a location outside the vob will have
+                # consequences for incremental building.
+                # Specifically, clearmake will not be able to generate
+                # config records for the derived objects and
+                # this means re-builds may not build everything as expected.
+                # For example, a change to a header file will not re-generate
+                # an object file associated with a source file including the header file.
+                # To avoid this problem, we will do an extra step where we
+                # force the affected library timestamps to be changed to a
+                # value earlier so that the build will rebuild them.
+                runCmdExitOnFailure(
+                       $logFH,
+                       "resettimestamp",
+                       "Build resettimestamp of $pkgname failed for $family/$target. Aborting...\n",
+                       "( cd %s && $buildcmd resettimestamp ) 2>&1",
+                       $dir);
+            }
+            else
+            {
+                runCmdExitOnFailure(
+                       $logFH,
+                       "clean",
+                       "Build clean of $pkgname failed for $family/$target. Aborting...\n",
+                       "( cd %s && $buildcmd clean ) 2>&1",
+                       $dir);
+            }  
+            return $? if ($? != 0);
+        };
+    }
+}
+
+sub buildCommonPackage($$$$$$)
+{
+    my $logFH = shift;
+    my $buildcmd = shift;
+    my $family = shift;
+    my $target = shift;
+    my $pkgref = shift;
+    my $waitThreadFinish = shift;
+
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $targetName = ($target eq "*") ? "fam" : $target;
+
+    announce "  Building $family/$targetName for $pkgname.\n";
+
+    # Run in a thread
+    my $thr = async
+    {
+        # Run setup, allowing for multiple COMPILE_DIR values
+        for my $dir (split /\s+/, $pkgref->{'COMPILE_DIR'})
+        {
+            runCmdExitOnFailure(
+                   $logFH,
+                   "build setup",
+                   "Build setup of $pkgname failed for $family/$targetName. Aborting...\n",
+                   "( cd %s && $buildcmd setup ) 2>&1",
+                   $dir);
+            return $? if ($? != 0);
+        }
+
+        # Give priority to the pls_context_id command line argument.
+        # If it is set, use that, ignore the PLS_CONTEXT_ID in the patch xml file.
+        # Otherwise use PLS_CONTEXT_ID from patchXml file if it is set.
+        if ($pls_context_id)
+        {
+            my $plsctx = "PLS_CONTEXT=$pls_context_id";
+            # Append this to the build command
+            $buildcmd = "$buildcmd -J8 $plsctx ";
+        }
+        elsif ($pkgref->{'PLS_CONTEXT_ID'} ne "")
+        {
+            #If PLS_CONTEXT_ID tag is found, then have to pass this to ubuild
+            #PLS_CONTEXT is used in building gwcimage pkg patch
+            my $plsctx = $pkgref->{'PLS_CONTEXT_ID'};
+            if ($plsctx ne "") 
+            { 
+               my  $tmp=lc($plsctx);
+               $plsctx = "PLS_CONTEXT=$tmp";
+               print "$plsctx \n";
+               # Append this to the build command
+               $buildcmd = "$buildcmd $plsctx ";
+            }
+        }
+        else
+        {
+            # Nothing to do.
+        }
+
+
+        # Next, run compile
+        # if there are multiple compile dir's we have to run compile
+        # number of compile dirs + 1 times and not exit on any failure but the last pass.
+        # This is done only if $multiPassBuild is set
+        my @compileDirList = split /\s+/, $pkgref->{'COMPILE_DIR'};
+
+        my $funcRef = \&runCmdExitOnFailure;
+        my $numPasses = 1;
+    
+        if ((scalar(@compileDirList) > 1) && ($multiPassBuild) )
+        {
+            $funcRef = \&runCmd;
+            $numPasses = scalar(@compileDirList) + 1;
+        }
+        print $logFH "\n\n$pkgname contains " . scalar(@compileDirList) . " compile dirs. Build will be done $numPasses times.\n";
+        for (my $counter=1; $counter <= $numPasses; $counter++)
+        {
+            print $logFH "Pass # $counter for $family/$targetName...\n";
+            my $modBldCmd = $buildcmd;
+            #We want to build all files regardless of failure in case of multi
+            #compile dir. 
+            if ( $counter < $numPasses ) {
+              $modBldCmd .= " -k"; #dont stop build, on first file compile err
+            }
+            for my $dir (@compileDirList)
+            {
+                
+                my $errMsg = "Build of $pkgname failed for $family/$targetName."
+                           . " Pass = $counter ... \n";
+                &$funcRef($logFH,
+                          "build-Pass-$counter",
+                          $errMsg,
+                          "( cd $dir && $modBldCmd ) 2>&1");
+                if ($counter == $numPasses)# i.e final pass, so check errorcode
+                {
+                    my $rc = $? >> 8; # must shift $? right by 8 if using exit()
+                    if ($rc != 0)
+                    {
+                        return ($rc) if (threads->tid() != 0);
+                        exit ($rc);
+                    }
+                }
+            }#for my $dir
+        } #for my $counter
+
+        my $pkgdir = $pkgref->{'PACKAGE_DIR'};
+        if ($pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target} ne "")
+        {
+            $pkgdir = $pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target};
+        }
+
+        #lets run clean on the pkg dir first
+        runCmdExitOnFailure(
+               $logFH,
+               "cleanPkg",
+               "Clean Package of $pkgname failed for $family/$targetName. Aborting...\n",
+               "( cd %s && $buildcmd clean ) 2>&1",
+               $pkgdir);
+        return $? if ($? != 0);
+
+        runCmdExitOnFailure(
+               $logFH,
+               "build",
+               "Build of $pkgname failed for $family/$targetName. Aborting...\n",
+               "( cd %s && $buildcmd pkg ) 2>&1",
+               $pkgdir);
+        return $? if ($? != 0);
+    };
+    if ($waitThreadFinish eq "yes") 
+    {
+        $thr->join(); 
+    }
+}
+
+#This subroutine does ACSM stream's full build
+# ACSM Project has not adopted the build evolution. Once their build 
+# architecture is modified to be consistent with build evolution (support for
+# individual pkg build), this subroutine can be removed and instead ACSM 
+# packages should be built with runCommonBuild
+sub runACSMBuild
+{
+    if (-f "${acsmFullBuildFile}" ) 
+    { 
+        #This subroutine should not be called multiple times, since acsm does 
+        #not support individual pkg build. Full build only.
+        #So once full build done, this file gets created.
+        return; 
+    }
+    my $pkgref = shift;
+
+    #override version is used in ACSM builds because of lack of support for
+    #individual package builds. So, if a patch xml has 2 packages one of which
+    #has been patched many more times than the other, then this current patch
+    #will use same new override version.
+
+    my ($packageVersion);
+    
+    $packageVersion = $pkgref->{'version'};
+    
+    my $objDir = $ENV{'OBJPATH'};
+
+    if (-d "$objDir" ) 
+    {   #clean rule works only if previously built once
+        my ($cleanLogfile, $cleanLogFilename, $cleanCmd);
+        $cleanLogFilename = $logdir . "/ACSM_Clean.txt";
+        open $cleanLogfile, ">$cleanLogFilename"
+            or die "Unable to create log file: $cleanLogFilename\n";
+
+        autoflush $cleanLogfile;
+
+        my $cleanCmd = "cd $pkgref->{'COMPILE_DIR'} && $sbuild clean ntmkbw_PKGVERSION=$packageVersion";
+
+        announce "Clean for ACSM started.\n";
+        setProgressFlag("fullbld", $packageVersion, $flagInProgress);
+
+        runCmdExitOnFailure(
+            $cleanLogfile,
+            "clean ACSM",
+            "Clean of ACSM failed. Aborting...\n",
+            "( $cleanCmd ) 2>&1");
+    } #end of if -d $objDir
+
+    my ($logfile, $bldCmd );
+
+    open $logfile, ">$acsmFullBuildFile"
+            or die "Unable to create log file: $acsmFullBuildFile\n";
+
+    autoflush $logfile;
+  
+    my $bldCmd = "$sbuild --buildNum=$acsmBuild ntmkbw_PKGVERSION=$packageVersion";
+
+    announce "Full build for ACSM started, version $packageVersion \n";
+    setProgressFlag("fullbld", $packageVersion, $flagInProgress);
+
+    runCmdExitOnFailure(
+        $logfile,
+        "build",
+        "Full Build of ACSM failed. Aborting...\n",
+        "( $bldCmd ) 2>&1");
+    setProgressFlag("fullbld", $packageVersion, $flagCompleted);
+    
+    #Once ACSM supports individual pkg builds, can use runCommonBuild to 
+    #determine if the needed parcel created
+    foreach(@packages)
+    {
+        my $filenm = $_;
+        my $parcelName = "${filenm}*${packageVersion}*.parcel";
+        my @out = `ls ${objDir}/*/pkgs/$parcelName 2>/dev/null`;
+        if ($? == 0) 
+        {
+            chomp($_) foreach(@out);
+            print $logfile "Found " . scalar(@out) . " parcels for pkg:$filenm \n";
+            push @parcels, @out;
+        }
+        else
+        {
+            print $logfile "Unable to find parcel with name:  ${parcelName} \n";
+            die("Unable to find $parcelName");
+        }
+    }
+} #end of sub runACSMBuild
+
+#
+# runCommonBuild:
+#
+#    This subroutine handles the common parcel build process.
+#
+sub runCommonBuild
+{
+    my $pkgref = shift;
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $cmdOutput;
+   
+    my @families = @{$pkgref->{'families'}};
+    my @targets = @{$pkgref->{'targets'}};
+
+    my $logFilename = $logdir . "/" . $pkgname . "_" . $pkgver . ".txt";
+    open my $logFH, ">$logFilename"
+        or die "Unable to create log file: $logFilename\n";
+
+    # Make the log file unbuffered
+    autoflush $logFH;
+
+    # Create logs for the archs
+    my %logs = ();
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $targetName . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $target . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagInProgress);
+
+    announce "Building $pkgname, version $pkgver.\n";
+
+    my %buildOpts = ();
+    for my $family (@allfamilies) # Use allfamilies to setup vars
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        $buildOpts{$family}{$target}  = $D ? "-D " : " -l $loadbuild ";
+        $buildOpts{$family}{$target} .= $ENV{'patch_LB_OPTS'};
+        $buildOpts{$family}{$target}  =~ s/::family::/$family/g;
+        $buildOpts{$family}{$target}  =~ s/::target::/$targetName/g;
+    }
+
+    for my $target (@alltargets)
+    {
+        my $family = $supportedTargets{$target};
+
+        $buildOpts{$family}{$target}  = $D ? "-D " : " -l $loadbuild ";
+        $buildOpts{$family}{$target} .= $ENV{'patch_LB_OPTS'};
+        $buildOpts{$family}{$target}  =~ s/::family::/$family/g;
+        $buildOpts{$family}{$target}  =~ s/::target::/$target/g;
+    }
+
+    if (!$D and ($firstCmnPkg == 1) and !$skipSyncInclude)
+    {
+        # On the first pass through, we want to run syncInclude for all families
+        announce "  Syncing include directories.\n";
+        for my $family (@allfamilies)
+        {
+            my $target = "*";
+            my $targetName = "fam";
+            async
+            {
+                my $logFH;
+                my $logFilename = $logdir . "/" . "syncIncludes_" . $family . "_" . $targetName . ".txt";
+                open $logFH, ">$logFilename"
+                    or die "Unable to create log file: $logFilename\n";
+                runCmdExitOnFailure(
+                       $logFH,
+                       "syncInclude",
+                       "Failed to run syncInclude for $family/$target. Aborting...\n",
+                       "$sbuild $buildOpts{$family}{$target} -f $family syncInclude 2>&1");
+                my $rc = $?;
+                close $logFH;
+                return $rc;
+            };
+        }
+
+        for my $target (@alltargets)
+        {
+            my $family = $supportedTargets{$target};
+            async
+            {
+                my $logFH;
+                my $logFilename = $logdir . "/" . "syncIncludes_" . $family . "_" . $target . ".txt";
+                open $logFH, ">$logFilename"
+                    or die "Unable to create log file: $logFilename\n";
+                runCmdExitOnFailure(
+                       $logFH,
+                       "syncInclude",
+                       "Failed to run syncInclude for $family/$target. Aborting...\n",
+                       "$sbuild $buildOpts{$family}{$target} -t $target syncInclude 2>&1");
+                my $rc = $?;
+                close $logFH;
+                return $rc;
+            };
+        }
+
+        if (waitForThreads() > 0)
+        {
+            die "Failed to build sync includes. Aborting...\n";
+        }
+
+        $firstCmnPkg = 0;
+    }
+
+    #We only clean compileDir if skipClean option is not provided 
+    unless ($skipClean)
+    {
+        # Do the clean and mk first
+        announce "  Cleaning .\n";
+
+        for my $family (@families)
+        {
+            my $target = "*";
+            my $buildcmd = "$sbuild $buildOpts{$family}{$target} -f $family PKG_VERSION=$pkgver";
+
+            cleanCommonPackage($logs{$family}{$target},
+                               $buildcmd,
+                               $family,
+                               $target,
+                               $pkgref);
+        }
+
+        for my $target (@targets)
+        {
+            my $family = $supportedTargets{$target};
+            my $buildcmd = "$sbuild $buildOpts{$family}{$target} -t $target PKG_VERSION=$pkgver";
+
+            cleanCommonPackage($logs{$family}{$target},
+                               $buildcmd,
+                               $family,
+                               $target,
+                               $pkgref);
+        }
+
+        if (waitForThreads() > 0)
+        {
+            die "Failed to clean. Aborting...\n";
+        }
+    } # end of unless ($skipClean)
+
+    my @altdirs;
+    for my $family (keys %{$pkgref->{'ALT_PACKAGE_DIR'}})
+    {
+        for my $target (keys %{$pkgref->{'ALT_PACKAGE_DIR'}{$family}})
+        {
+            push @altdirs, $pkgref->{'ALT_PACKAGE_DIR'}{$family}{$target};
+        }
+    }
+
+    announce "  Setting up mk.\n";
+    my $target = "*";
+    #TODO: Use ntmkbw_DEFAULTFAM when common.config env variables are exported"
+    my $mkbuild = "$sbuild $buildOpts{$defaultFam}{$target}";
+
+    for my $dir ((split /\s+/, $pkgref->{'COMPILE_DIR'}), $pkgref->{'PACKAGE_DIR'}, @altdirs)
+    {
+        runCmdExitOnFailure(
+               $logFH,
+               "mk",
+               "Build mk of $pkgname failed. Aborting...\n",
+               "( cd %s && $mkbuild mk ) 2>&1",
+               $dir);
+    }
+
+    if ($admindata{'TYPE'} eq "txt_patch") 
+    {
+      unless (-e "$txtPatchFlagFile") 
+      {
+        system("touch $txtPatchFlagFile");
+        if ($? == 0) 
+        {
+          print "txt_patch build in progress... \n";
+        }
+        else 
+        {
+          print "Warning - Unable to create file: $txtPatchFlagFile \n"; 
+        }
+      }
+    }
+
+    #Some packages dont support parallel build of it for different target
+    #Those package names are stored in file and the file with path is set
+    #in this environment variable
+    my $buildSerial = "no"; #build using multiple threads by default
+    my $searchPattern = ":" . $pkgref->{'PARCEL_NAME'} . ":";
+    if (defined ($ENV{SINGLE_THR_BLD_PKGLIST_FILE}) 
+           && (-e "$ENV{SINGLE_THR_BLD_PKGLIST_FILE}") )
+    {
+        if (`grep "$searchPattern" $ENV{SINGLE_THR_BLD_PKGLIST_FILE} 2>/dev/null`)
+        {
+            #if pkgname exists in build_single_threaded.list, then that pkg
+            #cannot handle parallel builds on families
+            $buildSerial = "yes";
+        }
+    }
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $buildcmd = "$sbuild $buildOpts{$family}{$target} -f $family PKG_VERSION=$pkgver";
+
+        buildCommonPackage($logs{$family}{$target},
+                           $buildcmd,
+                           $family,
+                           $target,
+                           $pkgref,
+                           $buildSerial);
+    }
+
+    # Wait for family to complete first
+    if (waitForThreads() > 0)
+    {
+        die "Failed to build $pkgname. Aborting...\n";
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+        my $buildcmd = "$sbuild $buildOpts{$family}{$target} -t $target PKG_VERSION=$pkgver";
+        buildCommonPackage($logs{$family}{$target},
+                           $buildcmd,
+                           $family,
+                           $target,
+                           $pkgref,
+                           $buildSerial);
+    }
+
+    # Wait for the threads
+    if (waitForThreads() > 0)
+    {
+        die "Failed to build $pkgname. Aborting...\n";
+    }
+
+    for my $family (@families)
+    {
+        my $target = "*";
+
+        my $targobjdir = $ENV{'patch_TARGOBJDIR_PATTERN'};
+        $targobjdir =~ s/::family::/$family/g;
+        $targobjdir =~ s/::target::/fam/g;
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                  $ENV{'OBJPATH'},
+                                  $targobjdir,
+                                  $finalname,
+                                  $pkgver;
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern checking now in 64 bit dir\n";
+                #This may be 64bit pkg which creates parcel in 64 suffixed dir
+                $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                          $ENV{'OBJPATH'},
+                                          $targobjdir . "64",
+                                          $finalname,
+                                          $pkgver;
+                @pfile = glob($pattern);
+                if (! -f $pfile[0]) 
+                {
+                    setProgressFlag($pkgname, $pkgver, $flagFailed);
+                    print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                    close $logFH;
+                    closeLogsFT(%logs);
+                    die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+                }
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $targobjdir = $ENV{'patch_TARGOBJDIR_PATTERN'};
+        $targobjdir =~ s/::family::/$family/g;
+        $targobjdir =~ s/::target::/$target/g;
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                  $ENV{'OBJPATH'},
+                                  $targobjdir,
+                                  $finalname,
+                                  $pkgver;
+
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern checking now in 64 bit dir\n";
+                #This may be 64bit pkg which creates parcel in 64 suffixed dir
+                $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                          $ENV{'OBJPATH'},
+                                          $targobjdir . "64",
+                                          $finalname,
+                                          $pkgver;
+                @pfile = glob($pattern);
+                if (! -f $pfile[0]) 
+                {
+                    setProgressFlag($pkgname, $pkgver, $flagFailed);
+                    print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                    close $logFH;
+                    closeLogsFT(%logs);
+                    die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+                }
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagCompleted);
+    close $logFH;
+    closeLogsFT(%logs);
+}
+
+#
+# runThirdpartyBuild:
+#
+#    This subroutine handles the VSE thirdparty parcel build process.
+#
+sub runThirdpartyBuild
+{
+    my $pkgref = shift;
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $cmdOutput;
+
+    my @families = @{$pkgref->{'families'}};
+    my @targets = @{$pkgref->{'targets'}};
+
+    my $makeCmd = `ivt gmake 3.80 which make`;
+    chomp $makeCmd;
+
+    if ($makeCmd eq "")
+    {
+        die "Unable to determine make command for thirdparty build\n";
+    }
+
+    my $logFilename = $logdir . "/" . $pkgname . "_" . $pkgver . ".txt";
+    open my $logFH, ">$logFilename"
+        or die "Unable to create log file: $logFilename\n";
+
+    # Make the log file unbuffered
+    autoflush $logFH;
+
+    # Create logs for the archs
+    my %logs = ();
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $targetName . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $logFilename = $logdir . "/" . $pkgname . "_" . $family . "_" . $target . "_" . $pkgver . ".txt";
+        open $logs{$family}{$target}, ">$logFilename"
+            or die "Unable to create log file: $logFilename\n";
+
+        autoflush { $logs{$family}{$target} };
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagInProgress);
+
+    announce "Building thirdparty $pkgname, version $pkgver.\n";
+
+    my $buildopt = $D ? "-D" : "-l $loadbuild";
+
+    my %build = ();
+
+    my @famList = @families;
+    push @famList, "$defaultFam" if (!grep { /^$defaultFam$/ } @famList); # for mk
+
+    for my $family (@famList)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        my $build = "ubuild $buildopt -f $family PKG_VERSION=$pkgver";
+
+        # First, need to get the arch sysroot.
+        # The following command will give us something like:
+        #     NCGL_SYSTEM_ROOT = "/opt/..."
+        # and we need what's contained in the ""s
+        #
+        my $sysroot = `cd $ENV{USE_SRC_ROOT}/vob/siren/tools/build && $build printvar name=NCGL_SYSTEM_ROOT 2>/dev/null | grep 'NCGL_SYSTEM_ROOT = \"'`;
+        chomp $sysroot;
+        $sysroot =~ s/.*?\"(.*)\"/$1/;
+        die "Could not determine sysroot" if ($sysroot eq "");
+
+        $build{$family}{$target} = "$sbuild -f $family -D -m $makeCmd MAKESTYLE=recurs NCGL_SYSTEM_ROOT=$sysroot PKG_VERSION=$pkgver TPSPKG_VERSION=$pkgver";
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $build = "ubuild $buildopt -t $target PKG_VERSION=$pkgver";
+
+        # First, need to get the arch sysroot.
+        # The following command will give us something like:
+        #     NCGL_SYSTEM_ROOT = "/opt/..."
+        # and we need what's contained in the ""s
+        #
+        my $sysroot = `cd $ENV{USE_SRC_ROOT}/vob/siren/tools/build && $build printvar name=NCGL_SYSTEM_ROOT 2>/dev/null | grep 'NCGL_SYSTEM_ROOT = \"'`;
+        chomp $sysroot;
+        $sysroot =~ s/.*?\"(.*)\"/$1/;
+        die "Could not determine sysroot" if ($sysroot eq "");
+
+        $build{$family}{$target} = "$sbuild -t $target -D -m $makeCmd MAKESTYLE=recurs NCGL_SYSTEM_ROOT=$sysroot PKG_VERSION=$pkgver TPSPKG_VERSION=$pkgver";
+    }
+
+    announce "  Cleaning.\n";
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        # Third party pkg build uses gnu make which internally triggers 
+        # ubuild mk (if not done already). However ubuild mk is not re-entrant.
+        # So removing async for clean
+        runCmdExitOnFailure(
+            $logs{$family}{$target},
+            "build clean",
+            "Build clean of $pkgname failed for $family/$target. Aborting...\n",
+            "( cd %s && $build{$family}{$target} clean ) 2>&1",
+            $pkgref->{'COMPILE_DIR'});
+        return $? if ($? != 0);
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        # Third party pkg build uses gnu make which internally triggers 
+        # ubuild mk (if not done already). However ubuild mk is not re-entrant.
+        # So removing async for clean
+        runCmdExitOnFailure(
+            $logs{$family}{$target},
+            "build clean",
+            "Build clean of $pkgname failed for $family/$target. Aborting...\n",
+            "( cd %s && $build{$family}{$target} clean ) 2>&1",
+            $pkgref->{'COMPILE_DIR'});
+        return $? if ($? != 0);
+    }
+
+    if (waitForThreads() > 0)
+    {
+        die "Failed to clean. Aborting...\n";
+    }
+
+    announce "  Setting up mk.\n";
+    runCmdExitOnFailure(
+           $logFH,
+           "build mk",
+           "Build mk of $pkgname failed. Aborting...\n",
+           "( cd %s && %s mk) 2>&1",
+           $pkgref->{'COMPILE_DIR'},
+           $build{$defaultFam}{"*"});
+
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        announce "  Building $family/$target for $pkgname.\n";
+
+        async
+        {
+            runCmdExitOnFailure(
+                   $logs{$family}{$target},
+                   "build",
+                   "Build of $pkgname failed for $family/$target. Aborting...\n",
+                   "( cd %s && $build{$family}{$target} ) 2>&1",
+                   $pkgref->{'COMPILE_DIR'});
+            return $? if ($? != 0);
+        };
+    }
+
+    if (waitForThreads() > 0)
+    {
+        die "Failed to clean. Aborting...\n";
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        announce "  Building $family/$target for $pkgname.\n";
+
+        async
+        {
+            runCmdExitOnFailure(
+                   $logs{$family}{$target},
+                   "build",
+                   "Build of $pkgname failed for $family/$target. Aborting...\n",
+                   "( cd %s && $build{$family}{$target} ) 2>&1",
+                   $pkgref->{'COMPILE_DIR'});
+            return $? if ($? != 0);
+        };
+    }
+
+    if (waitForThreads() > 0)
+    {
+        die "Failed to clean. Aborting...\n";
+    }
+
+    for my $family (@families)
+    {
+        my $target = "*";
+        my $targetName = "fam";
+
+        my $targobjdir = $ENV{'patch_TARGOBJDIR_PATTERN'};
+        $targobjdir =~ s/::family::/$family/g;
+        $targobjdir =~ s/::target::/$targetName/g;
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                  $ENV{'OBJPATH'},
+                                  $targobjdir,
+                                  $finalname,
+                                  $pkgver;
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                setProgressFlag($pkgname, $pkgver, $flagFailed);
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                close $logFH;
+                closeLogsFT(%logs);
+                die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    for my $target (@targets)
+    {
+        my $family = $supportedTargets{$target};
+
+        my $targobjdir = $ENV{'patch_TARGOBJDIR_PATTERN'};
+        $targobjdir =~ s/::family::/$family/g;
+        $targobjdir =~ s/::target::/$target/g;
+
+        # Add the parcel file to the filelist
+        for my $finalname (sort @{$pkgref->{'finalname'}{$family}{$target}})
+        {
+            my $pattern = sprintf "%s/%s/pkgs/%s-%s-*.parcel",
+                                  $ENV{'OBJPATH'},
+                                  $targobjdir,
+                                  $finalname,
+                                  $pkgver;
+            my @pfile = glob($pattern);
+
+            if (! -f $pfile[0])
+            {
+                setProgressFlag($pkgname, $pkgver, $flagFailed);
+                print $logFH "Missing parcel file: $pfile[0], pattern=$pattern \n";
+                close $logFH;
+                closeLogsFT(%logs);
+                die "Unable to find parcel file($pfile[0]) for $family/$target of $pkgname";
+            }
+
+            push @parcels, $pfile[0];
+        }
+    }
+
+    setProgressFlag($pkgname, $pkgver, $flagCompleted);
+    close $logFH;
+    closeLogsFT(%logs);
+}
+
+
+#
+# parcelNameSort:
+#
+#    Sorting subroutine, putting parcels in alphabetical order (ignoring path)
+#
+sub parcelNameSort
+{
+    # Chop off the path portion of the filename, and compare
+    #
+    my $fileA = $a;
+    $fileA =~ s/.*\///;
+
+    my $fileB = $b;
+    $fileB =~ s/.*\///;
+
+    return ($fileA cmp $fileB);
+}
+
+#
+# getParcelType:
+#
+#    Get the parcel type for the specified parcel
+#
+sub getParcelType($)
+{
+    my $definitionFile = shift;
+    my $parcelType = "rpm_package";
+
+    open DEF, $definitionFile or die "Could not open $definitionFile";
+    while (my $file = <DEF>)
+    {
+        chomp $file;
+        if ($file =~ m/<type>(.*?)<\/type>/s)
+        {
+            $parcelType = $1;
+            last;
+        }
+    }
+    close DEF;
+
+    return $parcelType;
+}
+
+#
+# generatePatchAdmindata:
+#
+sub generatePatchAdmindata
+{
+    my $fname = "$tmpdir/admindata";
+    open ADMIN, ">$fname" or
+        die "Could not write to $fname";
+
+    my %data = %admindata;
+
+    my $now = `date +"%Y-%m-%d %H:%M:%S"`;
+    chomp $now;
+
+    if (defined $data{'TYPE'})
+    {
+        if (($data{'TYPE'} ne $patchType) &&
+            ($data{'TYPE'} ne "txt_patch"))
+        {
+            die "Patch type in $filename is incorrect.\n";
+        }
+        if ($data{'TYPE'} eq "txt_patch") {
+          $patchType = "txt_patch";
+        }
+    }
+
+    print ADMIN <<ENDOFADMINHEADER;
+<admindata>
+    <metaversion>1.1</metaversion>
+    <payload>
+        <patch_id>$data{'PATCH_ID'}</patch_id>
+        <title>$data{'TITLE'}</title>
+        <description>$data{'DESCRIPTION'}</description>
+        <created>$now</created>
+        <baseline_release>$ENV{'ntmkbw_VSE_RELEASE'}</baseline_release>
+        <type>$patchType</type>
+ENDOFADMINHEADER
+
+    # Delete the admindata tags we've manually inserted.
+    delete $data{'PATCH_ID'};
+    delete $data{'TITLE'};
+    delete $data{'DESCRIPTION'};
+
+    # Delete the following ones as well, just in case, although they shouldn't
+    # exist in the input admindata anyway.
+    delete $data{'CREATED'};
+    delete $data{'BASELINE_RELEASE'};
+    delete $data{'TYPE'};
+
+    #
+    # Get the list of product components in this patch
+    # This is derived from information stored when the
+    # packageMapping.list file was earlier parsed.
+    #
+    my %components;
+    for my $p (@pkgs)
+    {
+        for my $ncl (keys %{$p->{'NCLS'}})
+        {
+            $components{$ncl}++;
+        }
+    }
+
+    #
+    # Add the list of required patches to the admindata
+    #
+    for my $req (split /\s+/, $data{'REQUIRES'})
+    {
+        $requiredPatches{$req}++ if ($req ne "");
+    }
+
+    if (scalar keys %requiredPatches > 0)
+    {
+        print ADMIN "<requires>\n";
+        for my $req (sort keys %requiredPatches)
+        {
+            print ADMIN "$req\n";
+        }
+        print ADMIN "</requires>\n";
+    }
+    delete $data{'REQUIRES'};
+
+    # Print product component requires list to the admindata
+    printProductComponentRequiresList(\*ADMIN, \%nclPatchMap);
+
+    #
+    # Add the list of product components to the admindata
+    #
+    print ADMIN "<product_components>\n";
+    for my $c (sort keys %components)
+    {
+        print ADMIN "$c\n";
+    }
+    print ADMIN "</product_components>\n";
+
+    #
+    # Add all the other tags that were in the input admindata
+    #
+    for my $K (sort keys %data)
+    {
+        my $k = lc($K);
+        print ADMIN "        <$k>$data{$K}</$k>\n";
+    }
+
+    # Now add the reboot criteria, if any
+    if ($rebootCriteriaDefined eq "Y")
+    {
+        # Print reboot criteria list to the admindata
+        printRebootCriteriaList(\*ADMIN, $rebootAllBlades, \%bladeRebootCriteria, \%appSgRebootCriteria);
+    }
+
+    print ADMIN <<ENDADMINDATA;
+    </payload>
+</admindata>
+ENDADMINDATA
+
+    close ADMIN;
+}
+
+
+#
+# parcelSort:
+#
+#    Sorting routine used to order parcels where there may be multiple versions
+#    of a particular package.
+#
+sub parcelSort
+{
+    $a =~ m/^(.*)\.(\d+)-[^-]*\.parcel$/;
+    my ($nameA, $verA) = ($1, $2);
+
+    $b =~ m/^(.*)\.(\d+)-[^-]*\.parcel$/;
+    my ($nameB, $verB) = ($1, $2);
+
+    my $rc = $nameA cmp $nameB;
+    return $rc if ($rc != 0);
+
+    return ($verA <=> $verB);
+}
+
+#
+# generateInitrd:
+#
+sub generateInitrd
+{
+    my $pkgref = shift;
+    my $pkgname = $pkgref->{'PARCEL_NAME'};
+    my $pkgver  = $pkgref->{'version'};
+
+    my $cmdOutput;
+
+    my $dir = "$ENV{USE_SRC_ROOT}/vob/siren/build_DO_1/ncl/CNPPPC01/packages";
+    my $loadbuildPpcDir = "$ENV{'ntmkbw_LOADSLOCATION'}/$loadbuild/ncl/CNPPPC01/packages";
+    my $loadbuildPatchesDir = "$ENV{'ntmkbw_LOADSLOCATION'}/$loadbuild/patches";
+
+    my $logFilename = $logdir . "/" . $pkgname . "_" . $pkgver . ".txt";
+    open my $logFH, ">$logFilename"
+        or die "Unable to create log file: $logFilename\n";
+
+    setProgressFlag($pkgname, $pkgver, $flagInProgress);
+
+    announce "Building $pkgname, version $pkgver.\n";
+
+    `rm -rf $dir` if (-d $dir);
+
+    `mkdir -p $dir`;
+    if ($? != 0)
+    {
+        setProgressFlag($pkgname, $pkgver, $flagFailed);
+        close $logFH;
+        die "Unable to create directory for initrd build: $dir";
+    }
+
+    # Copy the loadbuild packages first
+    print $logFH "Populating with loadbuild packages from $loadbuild...\n";
+    `cp $loadbuildPpcDir/*.parcel $dir`;
+    if ($? != 0)
+    {
+        setProgressFlag($pkgname, $pkgver, $flagFailed);
+        close $logFH;
+        die "Unable to copy parcels from $loadbuildPpcDir";
+    }
+
+    # Get rid of any initrd parcels
+    unlink <$dir/initrd-*.parcel>;
+
+    if (scalar @initrdPatches != 0)
+    {
+        # Next up, get the specified patches.
+        # First, we need to find the patches we can get locally.
+        my %localPatches;
+        my @rpsPatches;
+
+        open FIND, "find $patchdir $loadbuildPatchesDir -name '*.patch' 2>/dev/null |"
+            or die "Could not run find command";
+        while (my $file = <FIND>)
+        {
+            chomp $file;
+
+            my $patchname = $file;
+            $patchname =~ s:.*/(.*)\.patch:$1:;
+
+            $localPatches{$patchname} = $file
+                if (!defined $localPatches{$patchname});
+        }
+        close FIND;
+
+        # If any are missing, we'll need to download from RPS
+        for my $p (@initrdPatches)
+        {
+            if (!defined $localPatches{$p})
+            {
+                push @rpsPatches, $p;
+                next;
+            }
+
+            print $logFH "Extracting packages from $p:\n";
+            print $logFH `tar xf $localPatches{$p} -O $p.wrapper | tar xv -C $dir '*_ppc_*' 2>/dev/null`;
+
+            # Get rid of any initrd parcels
+            unlink <$dir/initrd-*.parcel>;
+        }
+
+        if (scalar @rpsPatches != 0)
+        {
+            # Now we need to download from RPS
+            use Net::FTP;
+            
+            my $host = "rps.ca.nortel.com";
+            my $user = "gsduser";
+            my $passwd = "Gsd!4alp";
+
+            if ($ENV{RPS_HOST} ne "")
+            {
+                $host = $ENV{RPS_HOST};
+            }
+            
+            my $ftp = Net::FTP->new($host)
+                or die "Cannot connect to $host";
+            
+            $ftp->login($user, $passwd)
+                or die "Cannot login to $host";
+            
+            $ftp->cwd("/NPM");
+            
+            $ftp->binary();
+            
+            for my $p (@rpsPatches)
+            {
+                print $logFH "Retrieving $p from $host:\n";
+                $ftp->get("$p.patch", "$tmpdir/$p.patch")
+                    or $ftp->quit(), die "Failed to retrieve $p from $host";
+
+                print $logFH "Extracting packages from $p:\n";
+                print $logFH `tar xf $tmpdir/$p.patch -O $p.wrapper | tar xv -C $dir '*_ppc_*' 2>/dev/null`;
+
+                # Get rid of any initrd parcels
+                unlink <$dir/initrd-*.parcel>;
+            }
+            
+            $ftp->quit();
+        }
+    }
+
+    # Copy all the PPC parcels we've built
+    print $logFH "Retrieving patches built with this patch...\n";
+    for my $ppc (grep { "_ppc_" } @parcels)
+    {
+        `cp $ppc $dir`;
+        if ($? != 0)
+        {
+            setProgressFlag($pkgname, $pkgver, $flagFailed);
+            close $logFH;
+            die "Unable to copy $ppc to $dir";
+        }
+    }
+
+    # Get rid of any initrd parcels
+    unlink <$dir/initrd-*.parcel>;
+
+    # Now we need to remove any duplicate packages, keeping only the
+    # highest versions of the parcels.
+    print $logFH "Removing older packages...\n";
+    my @files = glob("$dir/*.parcel");
+    my %kept;
+
+    for my $file (reverse sort parcelSort @files)
+    {
+        # Using a regular expression to break out two pieces of information
+        # from the parcel filename:
+        # 1. Everything up to the patch level - this is used for identifying
+        #    whether two files are the same package.
+        # 2. The patch level - only the highest will be kept.
+        $file =~ m/^(.*)\.(\d+)-[^-]*\.parcel$/;
+        my ($name, $ver) = ($1, $2);
+
+        if (!defined $kept{$name})
+        {
+            $kept{$name} = $ver;
+            next;
+        }
+
+        print $logFH "Removing $file\n";
+        unlink $file;
+    }
+
+    # Now we can finally build the initrd
+
+    my $cmd = "( cd $ENV{USE_SRC_ROOT}/vob/siren/tools/build && $sbuild -l $loadbuild -a ppc PKG_VERSION=$pkgver scx_initrd SCX_INITRD_ONLY=Y ) 2>&1";
+
+    print $logFH "Starting initrd build...\n\n";
+    open INITRDBUILD, "$cmd |" or die "Failed to launch initrd build command";
+    print $logFH $cmdOutput while ($cmdOutput = <INITRDBUILD>);
+    close INITRDBUILD;
+
+    my $rc = $? >> 8; # must shift $? right by 8 if using in exit()
+    if ($rc != 0)
+    {
+        setProgressFlag($pkgname, $pkgver, $flagFailed);
+        close $logFH;
+        print STDERR "Build of initrd failed. Aborting...\n";
+        exit ($rc);
+    }
+
+    my $initrdFile = "initrd-NTRY50_ppc_NTRY50AA_CNP-$pkgver-1.i386.parcel";
+    `mv $dir/$initrdFile $tmpdir`;
+    if ($? != 0)
+    {
+        setProgressFlag($pkgname, $pkgver, $flagFailed);
+        close $logFH;
+        die "Failed to move $dir/$initrdFile to $tmpdir";
+    }
+
+    push @parcels, "$tmpdir/$initrdFile";
+
+    setProgressFlag($pkgname, $pkgver, $flagCompleted);
+    close $logFH;
+}
+
+
+
+
+#
+# determineRequiredBintapPatches
+#
+#     Determine the required bintap patches
+#     based on the specified build version for the specified packages.
+#
+#     Inputs:
+#        Bintap Version file
+#        Build version
+#        Packages: Array of pkgnames
+#        List of Patches to ignore: The patches that are in OBS, OBE, SUP or DBG states
+#        UPDATES the hash requiredPatches
+#
+#
+sub determineRequiredBintapPatches($$$$$)
+{
+    my $bintap_version_file = shift;
+    my $buildVersion        = shift;
+    my $packages            = shift;
+    my $ignorePatches       = shift;
+    my $requiredPatches     = shift;
+
+    my %existingBintapPatches = ();
+    my %builtBintaps;
+
+    %builtBintaps = VpUtils::VpPatchDep::read_bintap_version_file(
+                                             $bintap_version_file,
+                                             $buildVersion,
+                                             \%existingBintapPatches);
+    for my $pkgname (@{$packages})
+    {
+        # Determine dependencies
+        # Writing an RPM patch causes ALL previous bintap patches to be
+        # subsumed
+        # So, all bintap patches that are affecting this package must be "required"
+        my @versions = VpUtils::VpGenUtils::sortHashByValueDescendingNum($builtBintaps{$pkgname}{$buildVersion});
+        for my $num (@versions)
+        {
+            if ((defined $builtBintaps{$pkgname}{$buildVersion}{$num}) &&
+                ($builtBintaps{$pkgname}{$buildVersion}{$num} ne "")    &&
+                (!defined $ignorePatches->{uc($builtBintaps{$pkgname}{$buildVersion}{$num})}))
+            {
+                my $req = $builtBintaps{$pkgname}{$buildVersion}{$num};
+                $requiredPatches->{$req}++;
+                mapPatchToNcl($ENV{USE_PKGMAPFILE}, \%pkgmap, $req, $pkgname, \%nclPatchMap);
+            }
+        }
+    }
+}
+
+
+#
+# MAIN
+#
+
+# Get the command-line arguments
+my $rc = GetOptions(
+        'xmlfile=s'                  => \$filename,
+        'ncglha-view=s'              => \$ncglhaView,
+        'ncglwrs-pkgdir=s'           => \$ncglwrsDir,
+        'build-version=s'            => \$buildVersion,
+        'loadbuild=s'                => \$loadbuild,
+        'ncglha-loadbuild=s'         => \$ncglhaLoadbuild,
+        'output=s'                   => \$outputDir,
+        'override-version=i'         => \$overrideVersion,
+        'allow-incomplete-targets'   => \$allowIncompleteTargets,
+        'initrd'                     => \$initrd,
+        'logdir=s'                   => \$logdir,
+        'update-version-file'        => \$updateVersionFile,
+        'D'                          => \$D,
+        'generate-admindata'         => \$justAdmindata,
+        'patchdir=s'                 => \$patchdir,
+        'ncglha-int-view=s'          => \$ncglhaIntView,
+        'remote'                     => \$remote,
+        'skip-clean'                 => \$skipClean,
+        'reset-timestamps'           => \$resetTimestamps,
+        'multi-pass-build'           => \$multiPassBuild,
+        'skip-sync-include'          => \$skipSyncInclude,
+        'acsm-build-num=s'           => \$acsmBuild,
+        'pls-context-id=s'           => \$pls_context_id,  
+        'help'                       => \$help);
+
+if (!$rc || defined($help))
+{
+    &showHelp;
+}
+
+print "\nUsing buildpatch version $pkgtoolVersion.\n\n";
+
+#
+# Validate the arguments
+#
+die "The patch XML file must be specified with --xmlfile.\n"
+    if (! $filename);
+
+die "The specified file, $filename, does not exist or is not readable.\n"
+    if (! -r $filename);
+
+die "The build version must be specified with --build-version.\n"
+    if (! $buildVersion);
+
+die "The production build must be specified with --loadbuild.\n"
+    if (! $loadbuild);
+
+die "$outputDir does not exist or is not writeable.\n"
+    if ((! -d $outputDir) || (! -w $outputDir));
+
+die "$logdir does not exist or is not writeable.\n"
+    if ((! -d $logdir) || (! -w $logdir));
+
+if ($updateVersionFile)
+{
+    die "The patch_RPM_PATCHVER_FILE environment variable must be set.\n"
+        if ($ENV{'patch_RPM_PATCHVER_FILE'} eq "");
+
+    die "The version file ($ENV{'patch_RPM_PATCHVER_FILE'}) must be writeable if --update-version-file is specified.\n"
+        if (! -w $ENV{'patch_RPM_PATCHVER_FILE'});
+}
+
+
+if ($ncglhaView)
+{
+    # Make sure the view exists
+    `$ct startview $ncglhaView 2>/dev/null`;
+    die "Failed to activate the specified ncglha-view: $ncglhaView\n"
+        if ($? != 0);
+
+    if ($ncglhaIntView)
+    {
+        # Use of ncglhaIntView also requires an environment variable
+        die "patch_NCGLHA_BASELINE_PREFIX must be defined when using --ncglha-int-view"
+            if ($ENV{'patch_NCGLHA_BASELINE_PREFIX'} eq "");
+
+        # Make sure the view exists
+        `$ct startview $ncglhaIntView 2>/dev/null`;
+        die "Failed to activate the specified ncglha-int-view: $ncglhaIntView\n"
+            if ($? != 0);
+    }
+}
+
+if ($remote)
+{
+    $sbuild = "ubuild --remote";
+    $habuild = "ubuild --remote";
+    $ncglhaSetup .= ";eval `toolsetup -s rbuild 1.4` export queue=CARR2_RHEL4_D_CARRIER;export HOME=\${HOME-/tmp}";
+}
+
+#
+# Before doing anything, validate the XML
+#
+my $cfgdir = `dirname $0`;
+$cfgdir =~ s/(\/bin)?$/\/config/;
+chomp $cfgdir;
+
+my $schema = "$cfgdir/vsePatch.xsd";
+
+die "Unable to read schema file: $schema"
+    if (! -r $schema);
+
+#
+# Validate the XML
+#
+my $xmlValidation = `$xmlValidator $filename $schema 2>&1`;
+if ($? != 0)
+{
+    print STDERR $xmlValidation, "\n";
+
+    die "Patch XML validation failed. Aborting...\n";
+}
+
+# Now that we've processed args and validated the XML, populate the globals
+# based on the args and environment settings
+setupGlobals();
+
+# Parse the packageMapping.list for each family
+for my $family (@allfamilies)
+{
+    if (parsePkgMapping($family, $ENV{USE_PKGMAPFILE}, \%pkgmap) != 0)
+    {
+        die "Failed to parse $ENV{USE_PKGMAPFILE}";
+    }
+}
+
+# Parse the nclMapping.list
+if (parseNclMapping($ENV{USE_NCLMAPFILE}, \%nclmap) != 0)
+{
+    die "Could not parse $ENV{USE_NCLMAPFILE}";
+}
+
+#
+# Parse the specified XML file.
+#
+my $parser = new XML::DOM::Parser;
+my $doc = $parser->parsefile($filename);
+
+# Check for possible build options in the XML
+my $xmlBuildOpts = $doc->getElementsByTagName("BUILD_OPTIONS");
+if ($xmlBuildOpts->getLength > 0)
+{
+    parseBuildOpts($xmlBuildOpts->item(0));
+}
+
+# Get the ADMINDATA element, and parse it
+my $adminnodes = $doc->getElementsByTagName("ADMINDATA");
+parseAdmindata($adminnodes->item(0));
+
+if (defined $existingPatches{$admindata{'PATCH_ID'}})
+{
+    die "$admindata{'PATCH_ID'} already exists in $ENV{'patch_RPM_PATCHVER_FILE'}\n";
+}
+
+# Get the PARCEL element(s)
+my $parcels = $doc->getElementsByTagName("PARCEL");
+$numParcels = $parcels->getLength;
+
+#
+# Parse the individual PARCEL elements
+#
+for (my $i = 0; $i < $numParcels; $i++)
+{
+    my $parcel = $parcels->item($i);
+    parseParcel($parcel);
+}
+
+# Check for INITRD element
+my $initrdElem = $doc->getElementsByTagName("INITRD");
+if ($initrdElem->getLength > 0)
+{
+    my $patchlist;
+
+    $initrdTargets = $initrdElem->item(0)->getAttribute("family");
+    if (!$initrdTargets)
+    {
+        $initrdTargets = "all";
+    }
+
+    if ($initrdTargets !~ /^(all|ppc)$/)
+    {
+        die "Invalid family specified for INITRD tag in XML: $initrdTargets\nValid families are: ppc or all\n";
+    }
+
+    # Retrieve the text, if any, associated with the INITRD tag.
+    # This is a list of patches to be included in the initrd.
+    for my $node ($initrdElem->item(0)->getChildNodes)
+    {
+       if ($node->getNodeType == TEXT_NODE)
+       {
+           $patchlist = $node->getNodeValue;
+       }
+    }
+
+    for my $p (sort (split /\s+/, $patchlist))
+    {
+        push @initrdPatches, $p if ($p ne "");
+    }
+
+    # Set the initrd option, allowing it to be specified in XML or as an option.
+    $initrd = 1;
+}
+
+if ($initrd)
+{
+    die "Building initrd is only supported within the VSE layer.\n"
+        if (!($ENV{'ntmkbw_PRODUCTID'} =~ m/^[Ss]iren$/));
+
+    die "The ntmkbw_LOADSLOCATION is required when building initrd.\n"
+        if (!$ENV{'ntmkbw_LOADSLOCATION'});
+
+    die "Loadbuild directory does not exist: $ENV{'ntmkbw_LOADSLOCATION'}/$loadbuild"
+        if (! -d "$ENV{'ntmkbw_LOADSLOCATION'}/$loadbuild");
+
+    # Add the initrd pkg info to the list
+    if ($initrdTargets eq "all" or $initrdTargets eq "ppc")
+    {
+        my %attr;
+        my $pkgname = "initrd-NTRY50";
+        $attr{'PARCEL_NAME'} = $pkgname;
+
+        # Get the version
+        $attr{'version'} = determineVersion($pkgname);
+
+        $attr{'buildfunc'} = \&generateInitrd;
+
+        # Push the attributes hash onto the global packages array
+        push @pkgs, \%attr;
+        push @packages, $pkgname;
+    }
+
+}
+
+if (defined $ENV{'patch_BINTAP_PATCHVER_FILE'})
+{
+    my $bintap_version_file = $ENV{'patch_BINTAP_PATCHVER_FILE'};
+    if ($bintap_version_file ne "") 
+    {
+        determineRequiredBintapPatches(
+                            $bintap_version_file,
+                            $buildVersion,
+                            \@packages,
+                            \%skip,
+                            \%requiredPatches);
+    }
+}
+
+# Get the PRODUCT_COMPONENT_REQUIRES_LIST element
+VpUtils::VpPatchXml::parseProductComponentRequiresListFromDoc($doc, \%nclPatchMap);
+
+# Get the REBOOT_CRITERIA_LIST element
+my $criteriaList = $doc->getElementsByTagName("REBOOT_CRITERIA_LIST");
+if ($criteriaList->getLength > 0)
+{
+    my $criteria = $criteriaList->item(0)->getElementsByTagName("REBOOT_CRITERIA");
+    my $numCriteria = $criteria->getLength;
+
+    #
+    # Parse the individual REBOOT_CRITERIA elements
+    #
+    for (my $i = 0; $i < $numCriteria; $i++)
+    {
+        my $criterion = $criteria->item($i);
+        parseCriteria($criterion);
+    }
+}
+
+# Now check the reboot status
+if ((scalar keys %bladeRebootCriteria > 0) or
+    (scalar keys %appSgRebootCriteria > 0) or
+    ($rebootAllBlades eq "Y"))
+{
+    $rebootCriteriaDefined = "Y";
+}
+
+if (($admindata{'REBOOT_REQUIRED'} eq "Y") and ($rebootCriteriaDefined ne "Y"))
+{
+    die "Input patch XML has set REBOOT_REQUIRED to Y, but no criteria is defined";
+}
+if (($admindata{'REBOOT_REQUIRED'} ne "Y") and ($rebootCriteriaDefined eq "Y"))
+{
+    die "Input patch XML has defined reboot criteria, but REBOOT_REQUIRED is not set to Y";
+}
+
+# Make sure reboot_required and apply_handling align
+if (($admindata{'REBOOT_REQUIRED'} eq "Y") and ($admindata{'APPLY_HANDLING'} eq "active"))
+{
+    die "Input patch XML has an invalid admindata combination.  REBOOT_REQUIRED cannot\n".
+        "be 'Y' when APPLY_HANDLING is 'active'\n";
+}
+
+#
+# Now that we're done with the parsed XML, we can clean up the memory
+#
+$doc->dispose;
+
+#
+# Check to see that all families in the patch XML were valid.
+#
+if ($invalidTargetFound != 0)
+{
+    die "Input XML file failed family validation stage. Aborting...\n";
+}
+
+if ($pls_context_id ne "")
+{
+    $pls_context_id = lc($pls_context_id);
+    $admindata{'pls_context_id'} = $pls_context_id;
+}
+
+if ($justAdmindata)
+{
+    # We've been asked to just generate the admindata file
+
+    my $now = `date`;
+    chomp $now;
+
+    print "The following information should be added to the version file:\n";
+    print "##############################################################\n";
+
+    for my $p (@pkgs)
+    {
+        my $pkgname = $p->{'PARCEL_NAME'};
+        my $pkgver  = $p->{'version'};
+
+        printf "%s:%s:%s:%s\n",
+                       $pkgname,
+                       $pkgver,
+                       $admindata{'PATCH_ID'},
+                       $now;
+                       
+    }
+    print "##############################################################\n\n";
+
+    generatePatchAdmindata();
+    `cp $tmpdir/admindata $outputDir/$admindata{'PATCH_ID'}.admindata`;
+    print "The admindata file has been written to: $outputDir/$admindata{'PATCH_ID'}.admindata\n";
+    exit (0);
+}
+
+#
+# Set the initial progress flags
+#
+for my $p (@pkgs)
+{
+    my $pkgname = $p->{'PARCEL_NAME'};
+    my $pkgver  = $p->{'version'};
+
+    setProgressFlag($pkgname, $pkgver, $flagNotStarted);
+}
+
+#
+# Build the parcels
+#
+for my $p (@pkgs)
+{
+    my $buildfunc = $p->{'buildfunc'};
+
+    &$buildfunc($p);
+}
+
+#
+# Generate the admindata file
+#
+generatePatchAdmindata();
+
+open PARCELLIST, ">$tmpdir/parcels.lst"
+    or die "Failed to open $tmpdir/parcels.lst for writing";
+
+print "\n\n";
+announce "The following parcels were built:\n";
+for my $p (sort parcelNameSort @parcels)
+{
+    print "$p\n";
+    print PARCELLIST "$p\n";
+}
+
+close PARCELLIST;
+
+#
+# Now that the parcels have been built and the admindata generated,
+# we can build the patch file.
+#
+print "\n\n";
+announce "Building patch...\n";
+
+my $cmddir = `dirname $0`;
+chomp $cmddir;
+
+my $cmd = "$cmddir/mergepatch -b -p $admindata{'PATCH_ID'} -a $tmpdir/admindata -f $tmpdir/parcels.lst -o $outputDir";
+
+open MERGE, "$cmd |" or die "Failed to launch mergepatch command";
+print while (<MERGE>);
+close MERGE;
+
+my $rc = $? >> 8; # must shift $? right by 8 if using in exit()
+if ($rc != 0)
+{
+    print STDERR "Call to mergepatch failed. Aborting...\n";
+    exit ($rc);
+}
+
+if ($updateVersionFile)
+{
+    open VERSION, ">>$ENV{'patch_RPM_PATCHVER_FILE'}"
+        or die "Could not update version file: $ENV{'patch_RPM_PATCHVER_FILE'}\n";
+
+    my $now = `date`;
+    my $time = time();
+    chomp $now;
+
+    for my $p (@pkgs)
+    {
+        my $pkgname = $p->{'PARCEL_NAME'};
+        my $pkgver  = $p->{'version'};
+
+        printf VERSION "%s:%s:%s:%s:%s:%s\n",
+                       $pkgname,
+                       $pkgver,
+                       $admindata{'PATCH_ID'},
+                       $admindata{'TYPE'},
+                       $time,
+                       $now;
+
+    }
+    close VERSION;
+}
+
+exit (0);
+

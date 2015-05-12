@@ -1,0 +1,163 @@
+#!/usr/bin/perl -Wall
+
+# This is the callback script that is added to build control file and called
+# to register new symbols. 
+#
+# Example:
+#  new_dyn_constant_reg buildBintapPatchSymbolRegister <path to the 
+#    patch-id.specification file> new_dyn_constant
+#  new_dyn_variable_reg buildBintapPatchSymbolRegister <path to the
+#    patch-id.specification file> new_dyn_variable
+#  new_dyn_procedure_reg buildBintapPatchSymbolRegister <path to the
+#    patch-id.specification file> new_dyn_procedure
+#
+# where buildBintapPatchSymbolRegister would simply write args[2..n]
+# to the file specified as arg[1].
+#
+# This callback script is executed with the following syntax:
+#  
+# New dynamic constant registration:
+# ----------------------------------  
+#     <command_line> <product_arch> <object_id> <patchid> <offset>
+#                    <constant_name> <file_scope> <function_scope>
+#
+# Where "command_line" is:
+#     buildBintapPatchSymbolRegister <path to the patch-id.specification file> new_dyn_constant
+#
+# New dynamic procedure registration:
+# ----------------------------------  
+#     <command_line> <product_arch> <object_id> <patchid> <index>
+#                    <procedure_name> <file_scope> <PHP_offset> <PHP_name>
+#                    <PHP_scope> <patch_vector_offset> <patch_vector_name>
+#                    <patch_vector_scope>
+#
+# Where "command_line" is:
+#     buildBintapPatchSymbolRegister <path to the patch-id.specification file> new_dyn_procedure
+#
+# New dynamic variable registration:
+# ----------------------------------  
+#     <command_line> <product_arch> <object_id> <patchid> <offset>
+#                    <variable_name> <file_scope> <function_scope>
+#
+# Where "command_line" is:
+#     buildBintapPatchSymbolRegister <path to the patch-id.specification file> new_dyn_variable
+#
+
+use strict;
+use English;
+
+$OUTPUT_AUTOFLUSH = 1;
+
+sub WriteSymbolInfo
+{
+    my $symbol_type = shift;
+    my $symbol_file = shift;
+    my $info = shift;
+
+    print "\n";
+    print "WriteSymbolInfo Input parameters:\n";
+    print "Symbol file: $symbol_file\n";
+    print "Symbol type: $symbol_type\n";
+    print "The rest of the parameters: @{$info}\n";
+    print "\n";
+
+    if (!open(SYMBOL_INFO, ">> $symbol_file"))
+    {
+        print "Unable to open $symbol_file for writing. $!\n";
+        exit(1);
+    }
+
+    my $infos = join(" ", @{$info});
+    print "Combined info arguments: $infos\n";
+    my $line = "$symbol_type $infos\n";
+    print "Adding $line to $symbol_file file\n";
+    if (!print(SYMBOL_INFO $line))
+    {
+        print "Unable to print to $symbol_file. $!\n";
+        exit(1);
+    }
+
+    if (!close(SYMBOL_INFO))
+    {
+        print "Unable to close $symbol_file. $!\n";
+        exit(1);
+    }
+
+    if (!-f $symbol_file)
+    {
+        print "Unable to create $symbol_file file. $!\n";
+        exit(1); 
+    }
+}
+
+
+# MAIN
+{
+    my $symbol_type;
+    my $symbol_file;
+
+    if ($#ARGV < 0)
+    {
+        print "Syntax: $0 [new_dyn_constant|new_dyn_procedure|new_dyn_variable] <arguments>\n";
+        exit(1);
+    }
+
+    $symbol_file = shift(@ARGV);
+    print "Specified symbol file is: $symbol_file\n";  
+
+    $symbol_type = shift(@ARGV);
+    print "Specified symbol type is: $symbol_type\n";
+
+    print "The rest of the parameters are: @ARGV\n";
+    my @args = @ARGV;
+    if ($symbol_type eq 'new_dyn_constant')
+    {
+        if ($#ARGV != 6)
+        {
+            print
+                "Syntax: $0 new_dyn_constant <product_arch> <object_id> <patchid>" .
+                "                            <offset> <constant_name> <file_scope>" .
+                "                            <function_scope>\n";
+            exit(1);
+        }
+
+        WriteSymbolInfo($symbol_type, $symbol_file, \@args);
+    }
+    elsif ($symbol_type eq 'new_dyn_procedure')
+    {
+        if ($#ARGV != 11)
+        {
+            print
+                "Syntax: $0 new_dyn_procedure <product_arch> <object_id> <patchid>" .
+                "                             <index> <procedure_name> <file_scope>" .
+                "                             <PHP_offset> <PHP_name> <PHP_file_scope>" .
+                "                             <patch_vector_offset> <patch_vector_name>" .
+                "                             <patch_vector_file_scope>\n";
+            exit(1);
+        }
+
+        WriteSymbolInfo($symbol_type, $symbol_file, \@args);
+    }
+    elsif ($symbol_type eq 'new_dyn_variable')
+    {
+        if ($#ARGV != 6)
+        {
+            print
+                "Syntax: $0 new_dyn_variable <product_arch> <object_id> <patchid>" .
+                "                            <offset> <variable_name> <file_scope>" .
+                "                            <function_scope>\n";
+            exit(1);
+        }
+
+        WriteSymbolInfo($symbol_type, $symbol_file, \@args);
+    }
+    else
+    {
+        print "Unrecognized symbol type, $symbol_type.\n";
+        exit(1);
+    }
+
+    exit(0);
+}
+
+

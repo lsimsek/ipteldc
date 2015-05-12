@@ -1,0 +1,125 @@
+<VSEPATCH>
+   <ADMINDATA>
+       <PATCH_ID>GVMB_2.0.0_1</PATCH_ID>
+       <TITLE>GVMB20_Patch_Bundle_1</TITLE>
+       <DESCRIPTION>
+	   
+PATCH ID: ABP-1054
+FIX ID: GVMB20 Patch Bundle 1 2014wk22 contains fixes for:
+
+ABP-1039	R18 - Unable to delete AS data completely after modifying its properties.
+Description:	Some MOs of AS childern are not able to delete after modify of AS MO is performed. 
+
+ABP-1028	GVM 2.0 - Mismatch alarms between GVM and GENWare.
+The fix: Have GVM look for any incoming or re-synced alarm entityIds that start with rms, and change this during parsing to app-blade.
+
+ABP-1025 	GVM 2.0 S3 SBC rebranding impacted log names which in turn violates log name length restrictions
+
+ABP-1024	Fail to resync inventory A2 on GVM GUI after migrate to GVM2.0
+
+ABP-1014 	Wrong window title for GVM after IP address change
+
+ABP-1048	GVMB server.truststore corrupted by retrieving certificate from SBC server
+Description:	When GVMB manages a SBC, it retrieves certificate from SBC server during GVM start. However if retrieving fails it may populates some garbage into server.truststore.
+
+ABP-1013	R18 OAM_Some problems related to acknowledge/unacknowledge alarms on GVM GUI
+Description: 	Button Acknowledge doesnt work for CEM Mgr alarms
+Fix: Make Acknowledge/Unacknowledge work for Cem Mgr and removed some code in order not to work 2 times."
+
+ABP-1008	R18 OAM_There are some problems after modify and delete SPFS Plat on GVM GUI
+Description:	There is more SPFS MO which is auto discovered under its children after modify SPFS MO and the name of SPFS Plat SPFS is changed to 137.116.154.18-SPFS. Also, SPFS mo can not be deleted.
+Fix: Removed parentKey attribute from mo properties.
+
+ABP-1036	PM files of GENWare are compressed twice when GVM runs PM jobs for multi Genware devices.
+Description:	When 2 genware devices are used in 1 collection job, their threads are working at the same time and they both process the same files because of the file mask that is datafilled when creating the collection job.
+Fix: In this condition, both threads use the file mask that is datafilled on their on performance interfaces. So that, they don't process others' files.
+
+ABP-987		GVM02 GVM603 not very supportable
+Description:	devicetype=displayname added to the end of the existing component id content. 
+
+ABP-1033	After upgrading GVM to 2.0, GVM can't get SBC's children.
+Description:	Root Cause: During upgrade process deviceversionmapping can not be done properly due to a incorrect sql query.Because of this reason SBC is not integrated correctly to GVM.
+Fix: Corrected device version on deviceversionmapping table."
+
+ABP-1019	R18 - OAM - Upgrade: After upgrading GVM to 2.0, PM jobs for AS don't work and GVM can't get AS's children automatically.
+Description:	devicetype column of A2 mlcollectionjob and moname column of A2 jobdevicelist seems as erroneously upgraded.
+
+ABP-1032	GVM 2.0 Northbound SNMP traps for the core (via CEM Mgr) are missing log body content
+
+ABP-933		GVM02 nb syslog stream (gvmCustomerlog.txt) does not have correct event types
+
+ABP-1017	GVMB Device Icon update
+Description:	Update icon files for AS, SBC, C3, G9, G6,G5,G2 and add US a map
+
+ABP-1046	GVMB REST and REST+ Re-Fix
+Description:	SVE - Issue was reported by ABN-259 happens again with FC load. Temporary user is not deleted after using GSEC user to log in GVM while GSEC is using external server for authentication/authorization.
+
+ABP-1026 	G6 PM loss due to 'Too many open files' exception
+Description:	CEM device adaptor codes do not close its session, which can cause leaks of  socket and thread. 
+Fix: close the CEM device adaptor session whne disconnecting its inventory interface.
+
+       </DESCRIPTION>
+       <ACTIVATION_REQUIRED>N</ACTIVATION_REQUIRED>
+       <APPLY_HANDLING>active</APPLY_HANDLING>
+       <REBOOT_REQUIRED>N</REBOOT_REQUIRED>
+        <CATEGORY>GEN</CATEGORY>
+        <CLASS>corrective</CLASS>
+        <STATUS>S</STATUS>
+        <TYPE>rpm_patch</TYPE>
+        <CR>ABP-1054</CR>
+       <TEST_INSTRUCTIONS>Test instructions in SV testcases linked to these Jiras.</TEST_INSTRUCTIONS>
+       <WARNING>
+       </WARNING>
+       <REQUIRES>
+       </REQUIRES>
+   </ADMINDATA>
+
+ <PARCEL>
+    <PARCEL_NAME>gvmApp</PARCEL_NAME>
+    <COMPILE_DIR>/vob/gvm/gvmb/tools/build</COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/app/pkg</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf</PARCEL_NAME>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf</PACKAGE_DIR>
+    <PARCEL_REQUIRES_REBOOT>N</PARCEL_REQUIRES_REBOOT>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf_migration</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_hbnlib</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_hbnlib</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_genband</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_genband</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_nms</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_nms</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_migration</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_classes</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_classes</PACKAGE_DIR>
+ </PARCEL>
+
+</VSEPATCH>

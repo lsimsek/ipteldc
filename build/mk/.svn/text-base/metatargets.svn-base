@@ -1,0 +1,22 @@
+#
+# metatargets --
+#
+
+#
+# List of the targets which we do not want to pass the -J flag to.
+# Instead CC_JOBFLAG is set to the -J flag value.
+# One per line.
+#
+
+#
+# From local_rules.mk
+#
+top 
+top_no_mk 
+do_mk 
+thirdparty 
+formal 
+formal_no_mk 
+do_ncl_load 
+test
+test_no_mk

@@ -1,0 +1,474 @@
+#!/opt/tools/bin/perl
+
+#####################################################
+###   utest design and develop by                 ###
+###                                               ###
+###   Dan Buzuloiu                                ###
+###   Ali Muhammmad                               ###
+###                                               ###
+###   Version 1.4                                 ###
+#####################################################
+#
+# Fixing to build all targets with out building families.
+# 1.2  Added remote build feature
+# 1.3  
+## Fixing ISO image to create ISO images for each dmtar file
+## Print the log location after completing each family or target
+## Variables
+# 1.4
+## Changing t2iso command with buildIso wrapper, as per Don Penney's request  
+
+
+$UTEST_VER = 1.4;
+print "Using Utest version : $UTEST_VER\n";
+
+SETENV();
+system ("mkdir -p $ENV{OBJPATH}/logs") && die;
+print "Logs file are under $ENV{OBJPATH}/logs directory \n";
+
+$FAMTAGLIST = "${USE_SRC_ROOT}/vobs/lsba_platform_tools/build/config/fam-tgt.list";  ## List of Famaily target
+$GETARCH = "${USE_SRC_ROOT}/vobs/lsba_platform_tools/build/bin/getArch";  ## getArch location 
+$UBUILD = "ubuild";  ## ubuild use from dtd location it gets set by running .ubuild_setup script  
+$SLOTS = 3;  ## default target is 3
+$| =1;  ## Putting autoflush on
+$PRODID = $ENV{ntmkbw_PRODUCTID};  ## we will see later this for now I am hard coding it
+$BLADCONF = $ENV{patch_BLADES_CONFIG};
+$CREATTAR = "/vob/siren/tools/pkgtools/utils/createTars";
+$BUILDISO="/vob/siren/tools/pkgtools/utils/buildIso";
+
+my (@FINISHJOB, @FAILEDBUILD, @JOBLIST, %TGT);
+my @JOBLIST = '';
+my $do_mk = 'Y';
+my $NCGLSTR = "ncgl_$ENV{ntmkbw_NCGLVER}";   
+    ## using Getopt long function so we can get the other option in the @ARGV
+    use vars qw/ %opt /;
+    use Getopt::Long;
+    Getopt::Long::Configure("bundling", "pass_through" );
+    $result = GetOptions( "i" => \$opt_i,     ## -i required no option 
+                          "h|H" => \$opt_h,  ## it will go to usage if found -h or -H
+                          "k" => \$MY_PACKAGE,  ## This is for VSE and application which has packagemapping file
+                          "n=i" => \$SLOTS,     ## -n will take integer as an option. Number of build can run in paraller
+                          "f=s" => \$opt_f,     ## -f will accept string "all" for all families or for one or more can be separated by : or ,  
+                          "t=s" => \$opt_t,     ## -t will accept string "all" for all targets or for one or more can be separated by : or ,     
+                          "p=s" => \$MY_TMPDIR,  ## -p temp dir for ISO image, by defualt it will go to /tmp
+                          "r" => \$REMOTE,  ## -r to run the remote build
+                          "v=s" => \$MY_ISOFILE,  ## -v This will use with buildIso wrapper. To see the choices run "/vob/siren/tools/pkgtools/utils/buildIso -q all". Iso image is only for siren
+                          "x=s" => \$MY_SYSROOT,  ## -x is for sysroot       
+                          "y=s" => \$MY_PRVL );   ## -y is for prvious layer build directory.
+    if ($opt_h) {
+       Usage();
+    }
+    if ($MY_ISOFILE) {
+       my $ISO_REQ = `$BUILDISO -q $MY_ISOFILE`;
+       if ($ISO_REQ eq "") {
+         my $supported_opt =`$BUILDISO -q all`;
+         print "$MY_ISOFILE is an unsupported loadname. Supported loads are :\n $supported_opt \n";
+         exit 1;
+       }
+    } else {
+      $MY_ISOFILE='all';
+    }
+ 
+    if ($MY_PACKAGE) {
+      ## This option avaialable only for those streams who has packageMapping file. ha doesn't have one.
+      ## This option is currently not available. First we need to see the format
+      ## of new packageMapping file.
+      #$PACKAGE_MAPPING=${PACKAGE_MAPPING:=`dirname $0`/../pkgtools/config/packageMapping.list};
+    }
+    
+        
+    if ( $MY_PACKAG and ($opt_f or $opt_t)) {
+            ## Using -k will check the packages name from packagemap file. It is not ready yet
+            print "ERROR: The -k is not valid with -f or -t \n";
+            Usage();
+            exit 1;
+    }
+    
+    @BLDTGOPT = grep {/top|test|formal|mk|compile/} @ARGV; ### Finding the build target option
+    ## Changing the build option by adding _no_mk and if find mk as build target it will exit.
+    if ($BLDTGOPT[0] eq "") {
+       $do_mk = 'N'; 
+    } elsif ($BLDTGOPT[0] eq "mk") {
+       print "mk is not allowed it will runs by default. Available options are top, test and formal \n"; 
+       exit 1;
+    } elsif ($BLDTGOPT[0] !~ m/no_mk/) {
+       $BLDFOR = $BLDTGOPT[0];
+       $BLDTGOPT[0] =~ s/$/_no_mk/;
+    } 
+    
+    @BLDMKOPT = grep {!/top|test|formal|mk|compile/} @ARGV;  ### taking out the build option to pass with do_mk
+    @BLDARG = (@BLDMKOPT,@BLDTGOPT);
+    
+   ## This functionality is same as in the stest. If not find the -i option it will display the reminder message and exit
+    $IGNORE_CLOBBERALL="Y" if ($opt_i);
+    if (!$IGNORE_CLOBBERALL) {
+       my $check_obj = `ls -d $ENV{OBJPATH}/_* 2>/dev/null`;
+       if ($check_obj ne "") {
+          print "ERROR:
+                You did not perform the \"clobberall\" target before this build.
+                Please issue the command \"ubuild clobberall\" first.
+      
+                If you really know what you're doing and want to perform the build 
+                w/o performing clobberall, add the \"-i\" flag to the utest command.\n";
+          exit 1;
+        }
+
+     }
+
+    ## Family option if it is all then it will find the list of families in the fam-tar.lit under lsba vob else it takes string from -f     
+    ## option and split them if delimiter : or , use 
+
+     if ($opt_f) {
+        if ($opt_f eq all) {
+          # $famlist = `$GETARCH -v fam -f $FAMTAGLIST`;
+            @allfam = `ls -1 ${BLADCONF} | grep 'fam_.*\.in' | sed -e 's/fam_\\(.*\\)\\.in/\\1/'`;
+            chomp(@allfam);
+           #  @allfam = split(' ',$famlist);
+        } else {
+           @allfam = split('[:,]',$opt_f);
+           CHECKFAM(@allfam);   ### Validation of family name, check if it is exist in fam-tar.list file
+        }
+     }
+     push(@JOBLIST, @allfam);
+     #print "JOBLIST first: @JOBLIST \n";
+     
+    ## Target option if it is all then it gets the targets list of families pass with -f option from the fam-tar.lit.  
+     if ($opt_t){
+       if ($opt_t eq "all") {
+         if (!$opt_f) {
+            my @allfamfortgt = `ls -1 ${BLADCONF} | grep 'fam_.*\.in' | sed -e 's/fam_\\(.*\\)\\.in/\\1/'`;
+            chomp(@allfamfortgt);
+            foreach $fa (@allfamfortgt) {
+               @alltists = `ls -1 ${BLADCONF} | egrep '*_${fa}.in\$' | grep -v "fam" |sed -e 's/_${fa}\\(.*\\)//'`;
+               chomp(@alltists);
+               push(@alltgt, @alltists);
+               push(@JOBLIST, @alltists);   
+            }
+         } else {
+          foreach $fa (@allfam) {
+            ## They have to wait for family to build first
+            @alltists = `ls -1 ${BLADCONF} | egrep '*_${fa}.in\$' | grep -v "fam" |sed -e 's/_${fa}\\(.*\\)//'`;
+            chomp(@alltists);
+            push(@{$TGTs{$fa}}, @alltists);
+            push(@alltgt, @alltists);
+            }
+         }               
+       } else {
+            ## Specific target name it validate the target name by checking it existance in the fam-tar.list file, multiple targets need to use : or , as delimiter
+            @alltgt = split('[:,]',$opt_t);
+            CHECKTGT(@alltgt);
+            ### Below I am tring to find if the target is belongs to the family that also ask to build or not. 
+            ### If not then it will go to the build queue directly, 
+            ### it will not wait for family to finish first. Otherwise it will add in the family hash, 
+            ### which will wait for the family build to finish first.
+            foreach $tg1 (@alltgt) {
+              foreach $fam1 (@allfam, "phony_fam") {
+                $getarchlist = `$GETARCH -m $fam1 -f $FAMTAGLIST`;
+                if ($getarchlist =~ /$tg1/) {
+                    print "Target $tg1 found in family $fam1 \n";
+                    push(@{$TGTs{$fam1}}, $tg1);
+                    $found = "yes";  
+                    last;
+                } else {
+                    $found = "no";   
+                }
+              }
+              if ( $found eq "no" ) {
+                    push(@JOBLIST, $tg1);
+              }               
+            }
+          }
+      }
+      ### Default print the list of families and targets ask to build and the currently jobs in the build queue.
+      print "Following families to build : @allfam \n";
+      print "Following targets to build : @alltgt \n";
+      print "Assigning following jobs in the build queue :@JOBLIST \n"; 
+
+      @JOBLIST = grep(!/^\s*$/, @JOBLIST); 
+      #shift(@JOBLIST);  
+      print "SLOTS : $SLOTS \n";   ## print the number of build as to run in parallel. Default value is 3
+      if ($do_mk eq 'Y') {
+        MAKEBLD();     ### Running the build do_mk first
+      }
+
+    #### This is logic how we assigning the jobs in parallel. $# checks the number of element in the job queue if it is empty it get -1. 
+    #### Another array "running" use to add the jobs are currently in proccess.
+    #### If the running job is less then the slots and more jobs are in the JOBLIST it call the STARTJOB with the target or family name. 
+    ### And on succesfull initiating the job it add that target or  family to running array. Loops sleep for 1 and runs again 
+     while($#JOBLIST >= 0 || $#running >= 0) {
+       CHECKFINISHJOB(@running); 
+         if ($#running + 1 < $SLOTS && defined($JOBTORUN = shift(@JOBLIST))) {
+            print "Starting job $JOBTORUN ... \n";
+            STARTJOB($JOBTORUN);
+            push(@running, $JOBTORUN);
+            print "STATUS (Remaining: ", $#JOBLIST +1, " Running: ", $#running +1, ")\n";
+            next;
+         } else {
+           print ".";
+           sleep 1
+         }
+    }
+
+  if (@FAILEDBUILD) {
+       print "List of failed families/targets :  @FAILEDBUILD \n";
+  }
+  if ($BLDFOR  eq "formal" && $ENV{ntmkbw_PRODUCTID} eq "Siren") {
+    if (@FAILEDBUILD) {
+       print "Due to failed  Family/Target : @FAILEDBUILD , Iso image is not created\n";
+     } else {
+      print "Starting the ISO image creation script build type $BLDFOR\n";
+      ISOIMAGE();
+     }
+  }
+############################################
+### Common.config environment variable are not visible until ubuild command execute.
+### With below routine putting most of them in the hash so if we need to use we can set it here.
+sub SETENV {
+
+  my %values;
+  open GETENV, 'ub -D --exec printenv | egrep "ubuild_|ntmkbw_|patch_|OBJPATH|USE_|TOPDIR" |'
+    or die "ERROR: Failed to get environment setup";
+  while (<GETENV>)
+  {
+    chomp;
+    m/^([^=]*)=(.*)$/;
+    $values{$1} = $2;
+  }
+  close GETENV;
+     
+  $ENV{'patch_BLADES_CONFIG'} = $values{patch_BLADES_CONFIG};
+  $OBJPATH =  $ENV{'OBJPATH'} = $values{OBJPATH};# if $ENV{OBJPATH} eq "";
+  $ENV{'TOPDIR'} = $values{TOPDIR};# if $ENV{TOPDIR} eq "";
+  $ENV{'ntmkbw_PRODUCTID'} = $values{ntmkbw_PRODUCTID}; #if $ENV{ntmkbw_PRODUCTID} eq "";
+  $ENV{'USE_NCLMAPFILE'} = $values{USE_NCLMAPFILE};# if $ENV{USE_NCLMAPFILE} eq "";
+  $ENV{'USE_PKGMAPFILE'} = $values{USE_PKGMAPFILE};# if $ENV{USE_PKGMAPFILE} eq "";
+  $ENV{'USE_NCLVERSION'} = $values{USE_NCLVERSION};# if $ENV{USE_NCLVERSION} eq "";
+  $ENV{'ntmkbw_VSE_RELEASE'} = $values{ntmkbw_VSE_RELEASE};
+  $ENV{'ntmkbw_NCGLVER'} = $values{ntmkbw_NCGLVER};
+}
+
+############################################
+## This check the family name in the fam-tar.list
+sub CHECKFAM {
+  my @tg2 = @_;
+  foreach my $tg (@tg2) {
+   my $CFM = '';
+   $CFM = `$GETARCH -m $tg -f $FAMTAGLIST`;
+   if ($CFM eq '') {
+      print "ERRROR: Family name $tg is not correct. Please correct it and run it again \n";
+      exit 1;
+    } else {
+      #print "Family name $tg is a valid name \n";
+    }
+  }
+}
+#############################################
+## This check the target name in the fam-tar.list
+sub CHECKTGT {
+  my @tg2 = @_;
+  foreach my $tg (@tg2) {
+    my $CFM = '';
+    $CFM = `$GETARCH -v $tg -f $FAMTAGLIST`;
+    if ($CFM eq '' ) {
+      print "ERRROR: Target name $tg is not correct. Please correct it and run it again \n";
+      exit 1;
+    } else {
+      print "Target name $tg is a valid name \n";    
+    } 
+  }
+}
+
+###############################################\
+## This runs the do_mk command, it collects the log in mk.log file 
+sub MAKEBLD {
+
+  # First the mk phase of the build, common for all targets
+  print "First building mk, this build a prerequisite and needs run once cause it is common for all families and targets \n";
+  $MKCMD = "$UBUILD --log=$ENV{OBJPATH}/logs/mk.log @BLDMKOPT do_mk";
+  print "MKCMD: $MKCMD\n";
+  system("$MKCMD");
+
+ }
+###############################################
+## This first find the command and exeute it
+sub STARTJOB {
+  my $jobtorun = shift;
+  ## first find the command to run
+  my $cmdtorun = CMDAND($jobtorun);
+  #print "CMD: $cmdtorun \n";
+  system ("$cmdtorun");
+}
+
+################################################
+## This check the running array and check for existanc of .<tar|fam>.tgtbld flag or .<tar|fam>.err . 
+## It it finds neither of them then it assume the jobs is successfully finish. It then remove the job from running array
+## And check if it is the family and it has requested to build its associated targets
+## then it add them in the JOBLIST array so then can excute when any slot is available.
+## If it finds the  .<tar|fam>.err then add the target to FAILDBUILD array and remove from the running array.    
+sub CHECKFINISHJOB {
+     my @checkjob = @_;
+     if (@checkjob != "") {
+       my $i = 0;
+        foreach $j (@checkjob) {
+          #print "J : $j \n";
+          if ( ! -f ".${j}.tgtbld" && ! -f ".${j}.err" ) {
+            #print "\n${j} job is finished if it is a family build then it will add its targets to queue \n";
+            # Job is finished . Lets find if it is a family and if has associated targets to put in the queue
+             push(@FINISHJOB, $j);
+             splice(@running, $i,1); 
+             $i--;
+            ## we can now add its associated targets to @JOBLIST array
+            if (defined @{$TGTs{$j}}) {
+               print "\nFamily/Target ${j} build finished \n";
+               print "LOG FILE: $ENV{OBJPATH}/logs/${j}.log \n";
+               foreach  $t (@{$TGTs{$j}}) { 
+                print "Adding Targets in the queue = $t:\n";
+                push(@JOBLIST, $t);
+               }
+            } else {
+               print "\n Family/Target ${j} build finished \n";
+               print "LOG FILE: $ENV{OBJPATH}/logs/${j}.log \n";
+            }
+          } elsif ( -f ".${j}.err") {
+           print "\nERROR: Build failed for Family/target $j \n\n\n";
+           print "LOG FILE: $ENV{OBJPATH}/logs/${j}.log \n";
+           push(@FAILEDBUILD, $j);
+           splice(@running, $i,1);
+           $i--;
+          } 
+        $i++;
+       }
+    
+  } else {
+     #print "No job found running \n";
+  } 
+}
+    
+##################################################
+## This routine generate the commands to run, it called by STARTJOB routine.
+## This first check the passing variable is a family or a target
+## Then it checks if the designer specified a specail sysroot to use by -x option then it sets the NCGL_SYSTEM_ROOT accordingly.
+## It also checks if the designer specified -y to use a different previous layer dir. If it is then  it sets PRVL_PKGS_IN_DIR accordingly.
+## It has a standard command in the GENCMD varaible to initiate the ubuild. This command  gets replace with -t or -f option according to family or target build.
+
+sub CMDAND {
+  my $tgt = shift;
+  my $tgtopass = $tgt;    
+  my ($NCGL_SYSTEM_ROOT, $PRVL_PKGS_IN_DIR, @BLDOPT1) = '';
+  my $TG = `$GETARCH -v $tgt -f $FAMTAGLIST`;
+  if ($TG eq "") {
+      $FAM = $tgt;
+      $tgtopass = "fam";
+  } else {
+      $FAM = $TG;
+  }
+  if ($MY_SYSROOT) {
+        $NCGL_SYSTEM_ROOT = "$MY_SYSROOT/${PRODID}_${tgtopass}_${FAM}";
+        $BLDOPTSX = "NCGL_SYSTEM_ROOT=$NCGL_SYSTEM_ROOT";
+        push(@BLDOPT1,$BLDOPTSX)
+   }
+  if ($MY_PRVL) {
+        $PRVL_PKGS_IN_DIR = "$MY_PRVL/_${tgtopass}_${NCGLSTR}_${FAM}";
+        $BLDOPTSY="PRVL_PKGS_IN_DIR=$PRVL_PKGS_IN_DIR";
+        push(@BLDOPT1,$BLDOPTSY);
+   }
+  if ($REMOTE) {
+     if ($ENV{OBJPATH} =~ m:^/localdisk:) {
+       print "ERROR: Cannot use localdisk for OBJPATH with remote builds\n";
+       exit 1;
+     } 
+     $REMBLD="--remote";
+     push(@BLDOPT1,$REMBLD);
+  }
+
+  $GENCMD = "rm -f .${tgt}.err; touch .$tgt.tgtbld; $UBUILD --log=$ENV{OBJPATH}/logs/${tgt}.log opt $tgt @BLDOPT1 @BLDARG 2>&1 > /dev/null && rm -f .$tgt.tgtbld || touch .$tgt.err && rm -f .$tgt.tgtbld 1>/dev/null &";
+  if ($TG eq  "") {
+      #print "This is a Family build \n";
+      $GENCMD =~ s/opt/-f/; 
+        
+   } else {
+      #print "This is target build its command will be different \n";    
+      $GENCMD =~ s/opt/-t/; 
+   }
+   sleep 2;
+   return $GENCMD ;
+}   
+#################################################################
+## This routing use to generate the ISOIMAGE.   It is only for Siren. This routine is not finish yet. 
+## When  we move to siren we will edit this script to enable this routine
+sub ISOIMAGE  {
+   use File::Path; 
+   use File::Copy;
+   if (! $MY_TMPDIR) {
+        $MY_TMPDIR = "/tmp/$$";
+   }
+      #Adding createTars command
+   print "Runnig Create Tar command $CREATTAR, $TOPDIR\n";
+   system ("$CREATTAR 2>&1 | tee ${OBJPATH}/logs/create_tar.log" || die "Error Can't build the tarfile");
+   eval { mkpath( "${MY_TMPDIR}/siren_iso", {verbose => 1, mode => 0755}) };
+   if ($@) {
+        print "ERROR: Couldn't create $MY_TMPDIR/siren_iso: $@ \n";
+        exit 1;
+   }
+   
+  print " Creating ISO image through buildIso..........\n";
+  print "Command: $BUILDISO -l $MY_ISOFILE -i $OBJPATH/ncl -o $OBJPATH/ncl 2>&1 | tee ${OBJPATH}/logs/buildIso.log\n";
+  system("$BUILDISO -l $MY_ISOFILE -i $OBJPATH/ncl -o $OBJPATH/ncl 2>&1 | tee $OBJPATH/logs/buildIso.log" || die "Error buildIso failed");
+
+}
+    
+##################################################################
+## I try to use this part of -h or -H option. This routing find all the famiies and targets and list so designer know what are the valid targets and families.
+sub findallfamtar {
+    print "Available Families and Targets \n\n";
+    @famlist = `ls -1 ${BLADCONF} | grep 'fam_.*\.in' | sed -e 's/fam_\\(.*\\)\\.in/\\1/'`;
+    chomp(@famlist);
+    print "FAMILIES           TARGETS\n";
+    print "---------          ------- \n";     
+    foreach $t (@famlist) {
+       @tgtlist = `ls -1 ${BLADCONF} | egrep '*_${t}.in\$' | grep -v "fam" |sed -e 's/_${t}\\(.*\\)//'`;
+       chomp(@tgtlist);
+       printf("%-14s    %s\n", "$t", "@tgtlist");
+    }
+}
+
+##################################################################
+sub Usage () {
+    
+    findallfamtar();           
+    print  "\nutest usage :
+
+            For more details please take a look at the wiki page: http://wiki.us.nortel.com/bin/viewauth/PDS/VSEBuildEvolution
+
+            utest [-i] <-f family1:family2 | all> < -t target1:target2 | all> [-x sysroot_location] [-p tmp_dir] [-o option option ...] [-v iso_file_name] [-k package]
+            -i  Use this if you want to ignore the clobberall message and\n
+                perform an incremental build using your existing build output.
+            -f  *Family*
+                List of family|ies separated by colon. if all families then specify all
+            -t  *Targets*
+                List of targets, separated by colon. if all targets then specify all
+            -k  *package name*
+                utest will search the packageMapping.list file and only build targets
+                that use the specified package.
+            -n  *num*
+                How many architecture builds we start in parallel
+            -x  *sysroot location*
+                Where to place your build output.  Passed as NCGL_SYSTEM_ROOT to ubuild
+            -y  *previous sysroot location*
+                Your previous layer sysroot location.  Passed as PRVL_PKGS_IN_DIR
+                to ubuild.
+            -r  To run the build remotly on LBU nodes
+                It uses lsf queue to schedule the build on LBU nodes.
+            -m  *Build command* 
+                By default ubuild uses clearmake, to change to gnu make use -m and path to command
+            -p  *temp dir*
+                Temporary directory used to create iso image.  Default /tmp. \n";
+
+      if ( $ENV{ntmkbw_PRODUCTID} eq "Siren") {
+      print "
+            -v  *iso load name. To see the choices run '/vob/siren/tools/pkgtools/utils/buildIso -q all'. By default it will build all.
+                It will use the buildIso wrapper. \n";
+             
+      }         
+  exit;
+   }                  

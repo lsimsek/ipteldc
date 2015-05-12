@@ -1,0 +1,729 @@
+#!/usr/bin/perl 
+#
+# This tool is used for merging ESDs
+#
+
+use warnings "all";
+use strict;
+
+# XML Parsing module
+use XML::DOM;
+
+use File::Basename; # fileparse
+use File::Path;     # mkpath and rmtree
+
+use Storable qw(dclone); # For deep copy of nested hash
+
+use Getopt::Std;
+
+#############################################################################
+#
+# Globals
+#
+use vars qw (
+    $baselineRelease
+    $tmpdir
+    %products
+);
+
+$baselineRelease = "";
+
+# Create the tmpdir
+chomp ($tmpdir = `mktemp -d -p /tmp mergeEsd.XXXXXX`);
+if (! -d $tmpdir)
+{
+    die "Unable to create working directory.\n";
+}
+
+#
+# The "END" is a special sub-routine that allows us to do some special handling
+# when the script exits. This is called when either exit or die are called,
+# and gives us a single place where we can clean up the temporary directory.
+# This is analogous to doing a "trap on exit" in bash.
+#
+END
+{
+    my $rc = $?;
+
+    if (-d $tmpdir)
+    {
+        #print "Cleaning up working directory: $tmpdir.\n";
+        `rm -rf $tmpdir`;
+    }
+
+    $? = $rc;
+}
+#############################################################################
+
+#############################################################################
+#
+# Function definitions
+#
+
+#
+# showUsage:
+#
+# Display help message, and a list of available loadnames.
+#
+sub showUsage()
+{
+    print STDERR <<EOF;
+Utility for merging ESDs
+  Options:
+    -c                     - ignore compatible_products validation and use the intersection
+    -d <dir>               - output directory (optional)
+    -o <esdname>           - output ESD name (ie. C20.7.0.0)
+    -v                     - verbose output, for debugging
+EOF
+    exit (1);
+}
+
+
+#
+# Hash utils:
+#
+# We have a few hashes that represent multi-valued tags in the productdef
+# files, and the following functions are used for validating or merging.
+
+# hashCmp(a, b): Compare b to a
+sub hashCmp
+{
+    my $a = shift;
+    my $b = shift;
+
+    # Must be same size
+    return 1 if (scalar keys %$a != scalar keys %$b);
+
+    # If every entry in b is in a, they're the same
+    for my $k (keys %$b)
+    {
+        return 1 if (! defined $$a{$k});
+    }
+
+    return 0;
+}
+
+# hashMerge(a, b): Merge b into a
+sub hashMerge
+{
+    my $a = shift;
+    my $b = shift;
+
+    for my $k (keys %$b)
+    {
+        $$a{$k}++;
+    }
+}
+
+# hashIntersect(a, b): Delete from a anything not in b
+sub hashIntersect
+{
+    my $a = shift;
+    my $b = shift;
+
+    for my $k (keys %$a)
+    {
+        delete $$a{$k} if (! defined $$b{$k});
+    }
+}
+
+#
+# Functions for parsing the productdef file:
+#
+# The following utility functions are used for recursively parsing the
+# productdef file and storing the data into a nested hash. The functions
+# use the XML::DOM module for XML parsing, and store the data in a handier
+# format.
+#
+# The parseChild function is used recursively for converting the XML:DOM
+# structures. Element nodes with children are written to a hash, and text
+# nodes are written as scalars.
+#
+# A few of the tags in the productdef file are lists of values, like the
+# platform_ncl_list tag. The convertToHash function is used to convert
+# such specific tags to a hash, which is more convenient for comparisons
+# and merging.
+#
+# The top-level function is parseProductdef, which calls the parseChild
+# and convertToHash functions.
+#
+
+#
+# parseChild:
+#
+# Recursive subroutine for parsing child nodes
+#
+sub parseChild
+{
+    my $node = shift;
+    my $href = shift;
+
+    if (($node->getNodeType == ELEMENT_NODE) && ($node->hasChildNodes))
+    {
+       my $parentName = $node->getNodeName;
+       my $numChildren = $node->getChildNodes->getLength;
+
+       # Loop through the child nodes. Store the value of text nodes,
+       # and recurse through element nodes.
+       for my $child ($node->getChildNodes)
+       {
+           if (($child->getNodeType == TEXT_NODE) and ($numChildren == 1))
+           {
+               # Store the text in the hash
+               $$href{$parentName} = scalar $child->getNodeValue;
+           }
+           elsif ($child->getNodeType == ELEMENT_NODE)
+           {
+               # Element nodes will be handled recursively.
+
+               if ($parentName eq "product_application_list")
+               {
+                   # We need to treat product_application_list special, as it can be a list
+                   # of more than one element of the same type (product_application_entity)
+
+                   # Each child node, product_application_entity, will be parsed as separate
+                   # hashes and stored in a list
+
+                   # Initialize the hash for the child node
+                   my $appRef = {};
+                   parseChild($child, $appRef);
+
+                   # Add the hash to the list
+                   push @{$href->{$parentName}}, $appRef;
+               }
+               else
+               {
+                   if (! defined $$href{$parentName})
+                   {
+                       # Initialize the hash for the child node(s)
+                       $$href{$parentName} = {};
+                   }
+                   parseChild($child, $href->{$parentName});
+               }
+           }
+        }
+    }
+}
+
+#
+# convertToHash:
+#
+# Convert a multi-valued list to a hash
+#
+sub convertToHash
+{
+    my $ref = shift;
+
+    my $list = $$ref;
+
+    # Strip leading and trailing spaces
+    $list =~ s/^\s*(.*?)\s*$/$1/m;
+
+    my %hash = ();
+    map ($hash{$_}++, (split /\s+/, $list));
+
+    $$ref = \%hash;
+}
+
+#
+# parseProductdef:
+#
+# Parse a productdef file into a nested hash structure
+#
+sub parseProductdef
+{
+    my $href = shift;
+    my $fname = shift;
+
+    my $parser = new XML::DOM::Parser;
+    my $doc = $parser->parsefile($fname);
+
+    my $product = $doc->getElementsByTagName("product");
+    my $data = $product->item(0);
+
+    $$href{"product"} = {};
+
+    # Recursively parse the tree
+    for my $node ($data->getChildNodes)
+    {
+        parseChild($node, $href->{"product"});
+    }
+
+    #
+    # Now that we're done with the parsed XML, we can clean up the memory
+    #
+    $doc->dispose;
+
+    #
+    # Convert the multi-value tags to hashes, for comparison/merging
+    #
+    convertToHash(\$href->{product}{payload}{compatible_products});
+    convertToHash(\$href->{product}{payload}{compatible_product_versions});
+    convertToHash(\$href->{product}{payload}{platform_ncl_list});
+
+    for my $appRef (@{$href->{product}{payload}{product_application_list}})
+    {
+        convertToHash(\$appRef->{product_application_entity}{product_ncl_list});
+    }
+}
+
+
+#
+# writeProductdef:
+#
+# Generate a productdef file from the hash data.
+#
+sub writeProductdef
+{
+    my $pref = shift;
+    my $fname = shift;
+
+    # Store the list tags in variables
+    my $compatibleProducts = join "\n", (sort keys %{$pref->{product}{payload}{compatible_products}});
+    my $compatibleProductVersions = join "\n", (sort keys %{$pref->{product}{payload}{compatible_product_versions}});
+    my $platformNcls = join "\n", (sort keys %{$pref->{product}{payload}{platform_ncl_list}});
+
+    # Create the productdef file
+    open DEF, ">$fname"
+        or die "Could not open $fname: $!";
+
+    # Write the productdef file, accessing the specific tags.
+
+    printf DEF "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    printf DEF "<!-- GENiUS product definition file, generated %s -->\n",
+        scalar (localtime);
+    printf DEF "
+<product>
+   <metaversion>1</metaversion>
+   <payload>
+      <product_code>$pref->{product}{payload}{product_code}</product_code>
+      <product_id>$pref->{product}{payload}{product_id}</product_id>
+      <product_version>$pref->{product}{payload}{product_version}</product_version>
+      <product_title>$pref->{product}{payload}{product_title}</product_title>
+      <product_description>$pref->{product}{payload}{product_description}</product_description>
+      <product_baseline>$pref->{product}{payload}{product_baseline}</product_baseline>
+      <compatible_products>
+$compatibleProducts
+      </compatible_products>
+      <compatible_product_versions>
+$compatibleProductVersions
+      </compatible_product_versions>
+      <platform_ncl_list>
+$platformNcls
+      </platform_ncl_list>
+";
+
+    # Add the list of application entities
+    if (scalar @{$pref->{product}{payload}{product_application_list}} > 0)
+    {
+        print DEF "      <product_application_list>";
+
+        for my $appRef (@{$pref->{product}{payload}{product_application_list}})
+        {
+            my $appNcls = join "\n", (sort keys %{$appRef->{product_application_entity}{product_ncl_list}});
+
+            print DEF "
+         <product_application_entity>
+            <product_application_id>$appRef->{product_application_entity}{product_application_id}</product_application_id>
+            <product_application_release>$appRef->{product_application_entity}{product_application_release}</product_application_release>
+            <product_ncl_list>
+$appNcls
+            </product_ncl_list>
+         </product_application_entity>";
+        }
+        print DEF "
+      </product_application_list>
+";
+    }
+
+    printf DEF "
+   </payload>
+</product>
+";
+
+    close DEF;
+}
+
+#############################################################################
+#
+# Debug function: recursively print the hash
+#
+sub printHash
+{
+   my $href = shift;
+   my $level = shift;
+   for my $k (sort keys %$href)
+   {
+       print "\t" x $level, "$level: $k\t$$href{$k}\t", (ref $$href{$k}), "\n";
+       if (ref $$href{$k} eq "HASH")
+       {
+           printHash($href->{$k}, $level + 1);
+       }
+       elsif (ref $$href{$k} eq "ARRAY")
+       {
+           for (my $i = 0; $i < scalar @{$href->{$k}}; $i++)
+           {
+               print "\t" x $level, "$level: $k\[$i\]\t$$href{$k}[$i]\t", (ref $$href{$k}[$i]), "\n";
+               printHash($href->{$k}[$i], $level + 1);
+           }
+       }
+   }
+
+}
+#############################################################################
+
+
+
+#############################################################################
+#
+# Main
+#
+
+#
+# Get arguments
+#
+my %opts = ();
+if (!getopts('hcd:o:', \%opts)  || $opts{h})
+{
+    showUsage();
+}
+
+my $outdir = "."; # Default to pwd
+$outdir = $opts{d} if (defined $opts{d});
+
+if ((! -d $outdir) or (! -w $outdir))
+{
+    die "Directory $outdir does not exist or is not writeable\n";
+}
+
+if (!defined $opts{o})
+{
+    die "The output name must be specified with -o\n";
+}
+my $esdname = "$opts{o}.ESD";
+
+my @tarfiles = @ARGV;
+
+# Initialize the vars we're going to use for file information
+my %pdFiles = ();    # Lists of extracted productdef files, indexed by product id
+my %pdContents = (); # The parsed productdef info for each file, indexed by the file path
+
+# Extract and parse the productdef files
+for my $f (@tarfiles)
+{
+    # Expected filename is *.ESD.tar.gz or *.ESD.tgz
+    if ($f !~ /([^\/]*\.ESD)\.(tar\.gz|tgz)$/)
+    {
+        die "$f is not an ESD.";
+    }
+
+    my $name = $1;
+
+    # Extract all productdef files
+    system("tar xzf $f -C $tmpdir '*.productdef'") == 0
+        or die "Failed to extract productdef from $f: $!";
+
+    my @files = glob("$tmpdir/$name/DVD1/NCL/*.productdef");
+
+    for my $pd (@files)
+    {
+        # For each productdef file, store the path/filename and parse the file
+
+        my ($prod, $dir, $ext) = fileparse($pd, qr{\.productdef});
+        push @{$pdFiles{$prod}}, $pd;
+
+        # Parse the productdef now
+        $pdContents{$pd} = {};
+        parseProductdef(\%{$pdContents{$pd}}, $pd);
+    }
+}
+
+# Ensure there is at most one platform productdef file
+# TODO: Maybe we allow more than one, as long as the NCLs are the same?
+#       to support merging product ESDs?
+if (defined $pdFiles{CNP})
+{
+    if (scalar @{$pdFiles{CNP}} > 1)
+    {
+        die "There cannot be more than one platform";
+    }
+    else
+    {
+        # Get the platform release, for validation with the product ESDs
+        $baselineRelease = $pdContents{$pdFiles{CNP}[0]}{product}{payload}{product_baseline};
+    }
+}
+
+
+if (defined $opts{v})
+{
+    # Print the parsed productdef structures, for debugging
+    for my $prod (sort keys %pdFiles)
+    {
+        print `banner $prod`;
+    
+        for my $pd (sort @{$pdFiles{$prod}})
+        {
+            print "\n", ("*" x length($pd)), "\n$pd\n", ("*" x length($pd)), "\n";
+            printHash(\%{$pdContents{$pd}}, 0);
+        }
+    }
+}
+
+# Create a working dir for the merged ESD
+my $wdir = "$tmpdir/$esdname/DVD1";
+mkpath("$wdir/NCL")
+    or die "Failed to create $wdir/NCL directory: $!";
+
+#
+# Validate the productdef files
+#
+if (defined $pdFiles{CNP})
+{
+    # We're including a platform ESD, so let's make sure it has everything
+    # we need.
+    my $missingCount = 0;
+    my $platNclRef = $pdContents{$pdFiles{CNP}[0]}{product}{payload}{platform_ncl_list};
+
+    for my $prod (sort keys %pdFiles)
+    {
+        next if ($prod eq "CNP");
+
+        my @missing = ();
+        for my $pd (sort @{$pdFiles{$prod}})
+        {
+            # Check each required NCL in the productdef file, to ensure
+            # it is included in the platform ESD being merged
+            for my $ncl (sort keys %{$pdContents{$pd}{product}{payload}{platform_ncl_list}})
+            {
+                if (! defined $platNclRef->{$ncl})
+                {
+                    push @missing, $ncl;
+                    $missingCount++;
+                }
+            }
+        }
+
+        if (@missing)
+        {
+            warn "$prod requires the following missing platform NCLs:\n",
+                 (join ", ", @missing), "\n\n";
+        }
+    }
+
+    if ($missingCount > 0)
+    {
+        die "The platform ESD provided does not include all required NCLs.\n";
+    }
+}
+
+#
+# Validate (and merge) each individual product.
+# This includes moving the extracted productdef file to the working dir, or
+# generating a new merged file if needed.
+#
+my $errorCount = 0;
+for my $prod (sort keys %pdFiles)
+{
+    if ($prod eq "CNP")
+    {
+        # We know there's only one CNP productdef. Move its productdef now
+        system("mv $pdFiles{$prod}[0] $wdir/NCL/") == 0
+            or die "Failed to move $pdFiles{$prod}[0]: $!";
+        next;
+    }
+
+    my $validationFailed = 0;
+
+    # Loop through each app in the product
+    for my $pd (sort @{$pdFiles{$prod}})
+    {
+        # Check the platform release first
+        my $rel = $pdContents{$pd}{product}{payload}{product_baseline};
+
+        if ($baselineRelease eq "")
+        {
+            # If we're merging with a platform ESD, we'll be comparing
+            # the baseline against its version. Otherwise, we're comparing
+            # against which ESD we processed first.
+            # In any case, we're ensuring that all ESDs have the same
+            # baseline.
+            #
+            $baselineRelease = $rel;
+        }
+        else
+        {
+            # Make sure the baselines match in all productdef files
+            if ($rel ne $baselineRelease)
+            {
+                warn "The product_baseline for all ESDs must align\n";
+                warn "Expected $baselineRelease, but $pd contains $rel\n";
+                $validationFailed++;
+                next;
+            }
+        }
+
+        if (!defined $products{$prod})
+        {
+            # This is the first productdef file for this product,
+            # so we can just do a deep copy of the structure here.
+
+            $products{$prod} = dclone($pdContents{$pd});
+            next;
+        }
+
+        # Validate the entries that must match exactly
+
+        if ($pdContents{$pd}{product}{payload}{product_code}
+              ne $products{$prod}{product}{payload}{product_code})
+        {
+            warn "$pd: product_code doesn't align";
+            $validationFailed++;
+            next;
+        }
+
+        if ($pdContents{$pd}{product}{payload}{product_id}
+              ne $products{$prod}{product}{payload}{product_id})
+        {
+            warn "$pd: product_id doesn't align";
+            $validationFailed++;
+            next;
+        }
+
+        if ($pdContents{$pd}{product}{payload}{product_version}
+              ne $products{$prod}{product}{payload}{product_version})
+        {
+            warn "$pd: product_version doesn't align";
+            $validationFailed++;
+            next;
+        }
+
+        # Validate compatible_products
+        if (hashCmp(
+                     \%{$products{$prod}{product}{payload}{compatible_products}},
+                     \%{$pdContents{$pd}{product}{payload}{compatible_products}}
+                   ) != 0)
+        {
+            warn "The compatible_products of $pd doesn't align";
+
+            # If the compatible_products tags don't align, we'll allow the tool to
+            # continue if the user specified the -c option.
+            if (!defined $opts{c})
+            {
+                $validationFailed++;
+                next;
+            }
+            else
+            {
+                # User specified -c, so we'll use the intersection of compatible_products
+                hashIntersect(
+                     \%{$products{$prod}{product}{payload}{compatible_products}},
+                     \%{$pdContents{$pd}{product}{payload}{compatible_products}}
+                   );
+            }
+        }
+
+        # Validate compatible_product_versions
+        if (hashCmp(
+                     \%{$products{$prod}{product}{payload}{compatible_product_versions}},
+                     \%{$pdContents{$pd}{product}{payload}{compatible_product_versions}}
+                   ) != 0)
+        {
+            warn "The compatible_product_versions of $pd doesn't align";
+
+            # If the compatible_product_versions tags don't align, we'll allow the tool to
+            # continue if the user specified the -c option.
+            if (!defined $opts{c})
+            {
+                $validationFailed++;
+                next;
+            }
+            else
+            {
+                # User specified -c, so we'll use the intersection of
+                # compatible_product_versions
+                hashIntersect(
+                     \%{$products{$prod}{product}{payload}{compatible_product_versions}},
+                     \%{$pdContents{$pd}{product}{payload}{compatible_product_versions}}
+                   );
+            }
+        }
+
+        # Merge platform_ncl_list
+        hashMerge(
+                  \%{$products{$prod}{product}{payload}{platform_ncl_list}},
+                  \%{$pdContents{$pd}{product}{payload}{platform_ncl_list}}
+                 );
+
+        # Append product_application_list tags
+        # TODO: Do we need to validate these?
+        #       Maybe do it after the merge, to ensure each app appears once only.
+        push @{$products{$prod}{product}{payload}{product_application_list}},
+             @{$pdContents{$pd}{product}{payload}{product_application_list}};
+    }
+
+    if ($validationFailed != 0)
+    {
+        # We had a validation error.
+        # Flag it and keep going, so we warn about as many errors as possible
+
+        $errorCount++;
+        next;
+    }
+        
+    if (scalar @{$pdFiles{$prod}} == 1)
+    {
+        # There's only one productdef for this product, so just move the file
+        system("mv $pdFiles{$prod}[0] $wdir/NCL/") == 0
+            or die "Failed to move $pdFiles{$prod}[0]: $!";
+    }
+    else
+    {
+        # Generate the file
+        writeProductdef($products{$prod}, "$wdir/NCL/$prod.productdef");
+    }
+}
+
+if ($errorCount != 0)
+{
+    # We've generated as many warnings as we could, so now we can exit.
+    die "One or more errors occurred during ESD validation.\n";
+}
+
+#
+# Extract the ESDs:
+#
+# We'll do a little trickery here to save some effort. Since we've already
+# done a partial extraction, the ESD directories already exist. We'll replace
+# each of these with a symlink to the final output directory, so when we
+# extract the ESD contents, we're extracting to the final dir. This saves
+# the trouble of manually moving NCL and patch dirs.
+#
+for my $d (glob("$tmpdir/*"))
+{
+    if ((-d $d) and ($d ne "$tmpdir/$esdname"))
+    {
+        system("rm -rf $d && ln -s ./$esdname $d") == 0
+            or die "Failed to run command: $!";
+    }
+}
+
+# Extract the contents of the ESDs, except for the productdef files
+for my $f (@tarfiles)
+{
+    system("tar xzf $f -C $tmpdir --exclude='*.productdef'") == 0
+        or die "Failed to extract contents from $f: $!";
+}
+
+#
+# We've extracted all the ESD contents and merged the productdefs.
+# All that's left now is to create the tarfile
+#
+my $tarfile = "$outdir/$esdname.tar.gz";
+system("tar czf $tarfile -C $tmpdir ./$esdname") == 0
+    or die "Failed to create $tarfile: $!";
+
+print "Wrote: $tarfile\n";
+
+exit 0;
+

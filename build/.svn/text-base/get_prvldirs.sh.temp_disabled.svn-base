@@ -1,0 +1,4 @@
+#!/bin/sh
+
+exec /ebuild/ipteldc/ipteldc/trunk/tools/build/bin/get_prvldirs.sh ${1+"$@"}
+

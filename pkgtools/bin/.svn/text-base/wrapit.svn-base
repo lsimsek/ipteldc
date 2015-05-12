@@ -1,0 +1,31 @@
+#!/bin/sh
+###############################################################
+###############################################################
+
+#     #                                                   ###
+#  #  #    ##    #####   #    #     #    #    #   ####    ###
+#  #  #   #  #   #    #  ##   #     #    ##   #  #    #   ###
+#  #  #  #    #  #    #  # #  #     #    # #  #  #         #
+#  #  #  ######  #####   #  # #     #    #  # #  #  ###
+#  #  #  #    #  #   #   #   ##     #    #   ##  #    #   ###
+ ## ##   #    #  #    #  #    #     #    #    #   ####    ###
+
+###############################################################
+#
+# This file should only be updated by the USM team.
+#
+# Modifications to this file affect EVERYBODY!
+#
+###############################################################
+
+PERL=`which perl`
+
+if [ -n "$pkgtoolPATH" ]
+then
+    $PERL ${pkgtoolPATH}/bin/real_wrapit $@
+elif [ -f ${USE_SRC_ROOT}/vob/siren/tools/pkgtools/real_wrapit ]
+then
+    $PERL ${USE_SRC_ROOT}/vob/siren/tools/pkgtools/real_wrapit $@
+else
+    $PERL ${USE_SRC_ROOT}/vobs/lsba_platform_tools/pkgtool/bin/real_wrapit $@
+fi

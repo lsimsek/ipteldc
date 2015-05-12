@@ -1,0 +1,21 @@
+#								-*-makefile-*-
+ifneq ($(%XMLCHECK%XmlcheckDir),)
+  $(error %XMLCHECK% already defined at $(%XMLCHECK%XmlcheckDir))
+  x := $(shell echo %XMLCHECK% already defined at $(%XMLCHECK%XmlcheckDir) 1>&2)
+  error
+endif
+%XMLCHECK%XmlcheckDir := $(CURRDIR)
+#
+# Target used when a dependancy is required on the files.
+#
+
+_%XMLCHECK%_XMLFILE := $(CURRDIR)/$(%XMLCHECK%_XMLFILE)
+
+ALL_XMLCHECK += %XMLCHECK%
+
+# Rule:
+
+%XMLCHECK%: $(_%XMLCHECK%_XMLFILE) $(%XMLCHECK%_XSDFILE)
+	cd  $(%XMLCHECK%XmlcheckDir); $(XMLCHECKCMD) $^
+
+

@@ -1,0 +1,90 @@
+#
+# File Format is as follows:
+# layer:packageName:family:target:role:pec:NCLs
+#
+# The "layer" field indicates which layer the package is coming from, and
+# is used as a prefix for the final parcel name. This can be used to help
+# ensure uniqueness against other applications (ie. a package named "main"
+# with layer set to "GSA" that's built for the intel_c family would create
+# a parcel named main_intel_c_GSA).
+#
+#
+# The "packageName" field is the base name of the package, as defined in the
+# package's definition.pkg file. The final parcel name is built based on
+# the various package attributes:
+# <pkgname>_<family>[_<target>][_<role>][_<pec>][_<layer>]
+#
+#
+# The "family" field provides the family for the package. This field can be
+# used to specify a single family for a package, or can be set to "*" as a
+# wildcard.  Setting the family to "*" means that this particular configuration
+# rule will apply for whatever family/target is being built.
+#
+# The "target" field specifies the target for the package. If the target is
+# set to "*", it indicates the package is built for the family. Otherwise,
+# it is built for the specified target.
+#
+# The "role" field is used when a given package is intended for blades
+# that are providing a specific function. In most cases, a package will
+# not be role-specific, and should have this field set to "*". For example,
+# if a package is intended for delivery only to the Data Manager blades,
+# this field should be set to "dm", and in some cases, "dm-scx" or
+# "dm-rms" as well.
+#
+# Possible values for this field are:
+#     dm, app-blade, ngw, scx, dm-scx (S3) and dm-rms (RMS).
+#
+# In some cases, a package may be intended for multiple roles, in which
+# case a comma-separated list of roles may be specified.
+#
+# In addition, there are cases where a package is delivered, but is not
+# intended to be downloaded to the ramdisk of any blades (ie. firmware loads).
+# In this case, the role should be set to "nodownload".
+#
+# The "pec" field reconfigures a package to target a specific PEC. This should
+# be an exceptional case, as most of the packages should be common to all
+# pecs of a given architecture. Exceptions could include:
+#
+# 1. Packages that contain pec-specific configuration files.
+# 2. Family built packages which are to be delivered to a subset of the
+#    targets in the family.  Specify the PECs of each target.
+#
+# NCLs:
+#   See nclMapping.list for NCLs names, and their meaning.
+#
+# Guidelines:
+#  - If a package is common to all blades, it must be configured with a "*"
+#    for the family field.
+#  - If a package is common to all PECs of a given architecture, it must be
+#    configured with a "*" for the PEC field.
+#  - If a package is truly PEC-specific, it is specific to that exact PEC.
+#    The same package should not generally be made PEC-specific for multiple
+#    PECs.
+#
+
+# Download to all blades.
+#:Sample:*:*:dm:*:GVMB
+
+#GVM:gvmDM:intel_c:*:dm-rms,dm,dm-ngw:*:GVMB
+#GVM:gvmApp:intel_c:*:*:*:GVMB
+#GVM:gvm_apache:intel_c:*:*:*:GVMB
+#GVM:gvm_webnms_be_misc:intel_c:*:*:*:GVMB
+#GVM:gvm_mibs:intel_c:*:*:*:GVMB
+#GVM:gvm_migration:intel_c:*:*:*:GVMB
+#GVM:gvm_webnms_misc:intel_c:*:*:*:GVMB
+#GVM:gvm_webclient:intel_c:*:*:*:GVMB
+#GVM:gvm_web_inf:intel_c:*:*:*:GVMB
+#GVM:gvm_conf:intel_c:*:*:*:GVMB
+#GVM:gvm_conf_migration:intel_c:*:*:*:GVMB
+#GVM:gvm_gvmdata:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_adventnet:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_genband:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_nms_client:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_nms:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_license:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_classloader:intel_c:*:*:*:GVMB
+#GVM:gvm_classes_hbnlib:intel_c:*:*:*:GVMB
+#GVM:gvm_signedclient_classes:intel_c:*:*:*:GVMB
+#GVM:gvm_signedclient_netmonitor:intel_c:*:*:*:GVMB
+#GVM:gvm_help:intel_c:*:*:*:GVMB
+IPTELDC:intel_c:*:*:IPTELDC

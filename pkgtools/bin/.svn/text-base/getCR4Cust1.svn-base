@@ -1,0 +1,101 @@
+#!/usr/bin/perl
+
+############################################################################
+# getCR4Cust1
+#
+#   - tool to obtain CRs for a specified custom1 field
+#
+# Written  by: Jason Guyea - Sep 23, 2007
+# Updated  by: Madhu R     - Feb 01, 2010
+#
+############################################################################
+
+use LWP::UserAgent;
+use English;
+
+$OUTPUT_AUTOFLUSH=1;
+
+# Globals
+use vars qw (
+        $pswd
+        $gid
+        $uid
+        );
+
+# Get userid and password.
+# Return: gid, pwd
+sub login
+{
+    chomp($uid = `whoami`);
+    chomp($gid = `ypcat -k passwd | grep $uid | cut -f5 -d: |cut -f2 -d,`);
+    print STDERR "Password for [$gid]:";
+    system "stty -echo";
+    chomp($pswd = <STDIN>);
+    system "stty echo";
+    print STDERR "\n";
+}
+
+my $argCount=$#ARGV;
+if ($argCount == -1) {
+    print "$0 displays CRs with specified text in custom1 field\n\n";
+    print "Usage: $0 <Custom1 Field Text> [ [<outputFileWithPath>] [<GID> <PASS>]]\n\n" ;
+    exit;
+}
+$ARGV[0] =~ s/,/%2C/;
+my $outFile="";
+if (($ARGV[1]) && ($argCount == 1) ) {
+  $outFile = $ARGV[1];
+  if (!open (CRFP, ">" . $outFile) ) {
+    die ("ERROR: Unable to open output file: $outFile \n");
+  }
+}
+
+############################################
+# http://flexcr query:
+# (Forecast Release LIKE 'evse%' OR
+#  Forecast Release LIKE 'vse%'  OR
+#  Forecast Release LIKE 'ca%'   OR
+#  Forecast Release LIKE 'ssg%') AND 
+# Fix Deployment Type = 'PATCH'  AND 
+# Custom 1 LIKE 'VSE04BL4%'      AND    ## eg
+# Status NOT LIKE 'Cls%'
+############################################
+my $query = 'http://flex.ca.nortel.com/cr?v=v_p&s=r&m=csv&r=a9&q=010dc7.evse%25,200dc7.vse%25,200dc7.ca%25,201dc7.ssg%25,100o71.PATCH,100hc8.Cls,100k07.' . $ARGV[0] . '&t=0&t1=1';
+
+my $browser = LWP::UserAgent->new;
+$browser->agent('Mozilla/5.0');
+
+my $req = HTTP::Request->new(GET => $query);
+if ( $argCount != 2 ){
+    login();
+} else {
+    $gid  = $ARGV[1];
+    $pswd = $ARGV[2];
+}
+
+$req->authorization_basic($gid, $pswd);
+print ("Making Flex query, Please Wait... \n");
+if ($outFile ne "") {
+  print ("After Query finishes, CR list will be in $outFile... \n");
+}
+my $list = $browser->request($req)->content;
+$list =~ s/(\"CR Id\"\n|\")//mg;
+
+if ($outFile eq "") {
+  select(STDOUT);
+}
+else
+{
+  select(CRFP);
+}
+print $list;
+close(CRFP);
+
+$_ = $list;
+# If request timeout, exit 1;
+if (( /500 read timeout/) || ( /Authorization Required/))
+{
+    exit 1;
+}
+
+exit 0;

@@ -1,0 +1,42 @@
+#!/opt/tools/bin/perl 
+
+use Getopt::Std;
+%options = ();
+getopts("f:Hhm:v:",\%options) || die "Type $0 -h for help";
+
+%FAMs = ();
+%VALs = ();
+if  ($options{h} || $options{H}) {
+  usage();
+}
+
+open(TGT, "<$options{f}") or die "Can't open $options{f} $!\n";
+while (<TGT>) {
+  ($fam, $tgt, $oldArch) = split;
+  push( @{$FAMs{$fam}}, $tgt);
+  push( @{$VALs{$tgt}}, $fam);
+  push( @{$OLDARCHs{${fam}."_".${tgt}}}, $oldArch);
+ }
+close TGT;
+
+if ($options{m} && $options{v} && $options{f}) {
+    my $key = $options{m}."_".$options{v};
+    print "@{$OLDARCHs{$key}}";
+} elsif ($options{m} && $options{f}) {
+    print "@{$FAMs{$options{m}}}";
+} elsif ($options{v} && $options{f}) {
+    print "@{$VALs{$options{v}}}";   
+} else {
+    usage();
+}
+
+exit 0;
+
+sub usage {
+  print "Usage: getArch <[-m <fam>] [-v <value>]> -f <file> \n";
+  print " -m <fam> : Find all values for <fam> in  <file> \n";
+  print " -v <value>: Find families for <value> in <file>\n";
+  print " -m <fam> -v <value>: Find extra info for <fam> and <value> in <file>\n";
+  print " -f <file name> : Existing file content <fam> <value> <extra>\n";
+  exit 0;
+}

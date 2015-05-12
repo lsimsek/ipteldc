@@ -1,0 +1,143 @@
+#!/bin/sh
+
+#
+# skernb -- Siren Kernel Build
+#
+# Read on stdin a "wrsBuild.mk" file which has been exported out of the WRS
+# build and placed in the SYSROOT.  This file contains a sequence of lines
+# which will form the cmd line to use to build the kernel.
+#
+
+# 
+# An example wrsBuild.mk for a ppc target is shown here:
+#
+#-----------------------------------------------------------------------------
+# make
+# ARCH=ppc
+# CROSS_COMPILE=/opt/tools/wh/dtd/RHE-3/ncgl/ppc-R9b/bin/ppc-R9b-
+# HOSTCC=gcc
+# CC=/opt/tools/wh/dtd/RHE-3/ncgl/ppc-R9b/bin/ppc-R9b-gcc -specs=/localdisk/data/ias_cc/nortel_scx/build/specs
+# NOSTDINC_FLAGS=-nostdinc -isystem /nfs/other/opt_tools/wh/dtd/RHE-3/ncgl/ppc-R9b/bin/../lib/gcc/powerpc-wrs-linux-gnu/3.4.3/include
+# KERNELRELEASE=2.6.9-pne
+# -j4
+#-----------------------------------------------------------------------------
+#
+
+#
+# Parse the .mk file, form a command line to use to build the kernel and then
+# execute the command line.
+# 
+# Assume this script is executed from within the kernel source tree.
+#
+# usage: skernb [-h] [-n]
+#        -h = help
+#        -n = no execute; just echo the command line to run
+#
+# mpm May '05
+#
+
+usage() {
+    echo
+    echo "Usage: $0 [-h] [-n] <wrsBuild.mk"
+    echo "        -h = help"
+    echo "        -n = no execute; just echo the command line to run"
+    echo "Perform a Siren Kernel Build using a command line formed from the contents of a wrsBuild.mk file."
+    echo "It is assumed this script is executed from within the kernel tree that has come from the WRS SYSROOT."
+    echo
+}
+
+
+echoMode="no"
+
+while true ; do
+    if [ "$1" = "" ]; then
+	break
+    fi
+    case "$1" in
+    -h)
+       usage
+       exit 0 ;;
+    -n)
+       echoMode="yes"
+       shift ;;
+    *)
+       echo "***ERROR: Unrecognized parameter: $1"; echo
+       usage
+       exit 1 ;;
+    esac
+done
+
+cmdline=""
+part=""
+
+#
+# Read a line, apply any required fixups, and build up the cmd line that will
+# be executed.  The fixups are limited since we have knowledge of the format
+# of these .mk files.
+#
+
+while read l
+do
+  
+  #
+  # Using $MAKE is more appropriate than just "make"; assume this always
+  # begins the cmdline.
+  #
+  if [ "$l" = "make" ]; then
+      cmdline="\$MAKE"
+      continue
+  fi
+
+  #
+  # Nuke any -specs=... bits.
+  #
+  echo $l | grep -- '-specs=' >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+      part=`echo $l | sed 's/\-specs=[^ .*]*//'`
+      cmdline="$cmdline $part"
+      continue
+  fi
+
+  # Adjust the isystem path if necessary
+  echo $l | grep -e '-isystem' &> /dev/null
+  if [ $? -eq 0 ]; then
+    isystem=`echo $l | sed 's/.*-isystem[  ]*\([^  ]*\).*$/\1/'`
+    if [ -n "$isystem" ] ; then
+      # Ask the compiler set in the environment for its internal include path
+      newIsystem=`LANG=C $COMPILER_PATH/$CC -print-file-name=include`
+      # If we find it, substitute for the -isystem path
+      if [ -n "$newIsystem" ] ; then
+        part=`echo $l | sed "s,$isystem,$newIsystem,"`
+        l=$part
+      fi
+    fi
+  fi
+
+  #
+  # Quote the value portion of any assignment lines (those containing an '=').
+  #
+  echo $l | grep '=' >/dev/null 2>&1
+  if [ "$?" -eq 0 ]; then
+      part=`echo $l | sed -e 's/=/=\"/' -e 's/$/\"/'`
+      cmdline="$cmdline $part"
+      continue
+  fi
+
+  #
+  # Tack on anything else.
+  #
+  cmdline="$cmdline $l"
+
+done
+
+echo $cmdline
+if [ "$echoMode" = "yes" ]; then
+    exit 0
+fi
+
+if [ -z "$MAKE" ]; then
+    echo "skernb: ERROR: \$MAKE not set."
+    exit 1
+fi
+
+eval $cmdline

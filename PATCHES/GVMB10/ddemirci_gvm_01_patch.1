@@ -1,0 +1,112 @@
+<VSEPATCH>
+   <ADMINDATA>
+       <PATCH_ID>GVMB_1.0.0_2</PATCH_ID>
+       <TITLE>GVMB_Patch_Bundle_2</TITLE>
+       <DESCRIPTION>
+       	   Patch JIRA
+	   ==========
+	   ABP-388
+	   
+	   FIX JIRA
+	   ========
+       	   GVMB Patch Bundle 2 wk47 contains fixes for:
+	   ABP-348, ABP-184, ABP-341, ABP-202, ABP-229, ABP-379, ABP-344
+	   ABP-245, ABP-326, ABP-329, ABP-312, ABP-364, ABP-195, ABP-376
+	   ABP-302, ABP-331, ABP-179, ABP-248, ABP-378, ABP-307, ABP-365
+       </DESCRIPTION>
+       <ACTIVATION_REQUIRED>N</ACTIVATION_REQUIRED>
+       <APPLY_HANDLING>manual</APPLY_HANDLING>
+       <REBOOT_REQUIRED>Y</REBOOT_REQUIRED>
+        <CATEGORY>GEN</CATEGORY>
+        <CLASS>corrective</CLASS>
+        <STATUS>S</STATUS>
+        <TYPE>rpm_patch</TYPE>
+        <CR>ABP-388</CR>
+       <TEST_INSTRUCTIONS>Test instructions in SV testcases linked to these Jiras.</TEST_INSTRUCTIONS>
+       <WARNING>
+       </WARNING>
+       <REQUIRES>
+       </REQUIRES>
+   </ADMINDATA>
+
+ <PARCEL>
+    <PARCEL_NAME>gvmApp</PARCEL_NAME>
+    <COMPILE_DIR>/vob/gvm/gvmb/tools/build</COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/app/pkg</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_classloader</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_classesloader</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_genband</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_genband</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_nms</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_nms</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_nms_client</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_nms_client</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_conf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_conf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_migration</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_migration</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_web_inf</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_web_inf</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_webnms_misc</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/pkg_webnms_misc</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_classes</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_classes</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_signedclient_netmonitor</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/signedclient/pkg_netmonitor</PACKAGE_DIR>
+ </PARCEL>
+
+ <PARCEL>
+    <PARCEL_NAME>gvm_classes_adventnet</PARCEL_NAME>
+    <COMPILE_DIR></COMPILE_DIR>
+    <PACKAGE_DIR>/vob/gvm/gvmb/src/pkgs/classes/pkg_adventnet</PACKAGE_DIR>
+ </PARCEL>
+
+ <REBOOT_CRITERIA_LIST>
+    <REBOOT_CRITERIA> 
+        <APP_SERVICE_GROUP>gvm</APP_SERVICE_GROUP>
+    </REBOOT_CRITERIA> 
+ </REBOOT_CRITERIA_LIST>
+
+
+</VSEPATCH>
+

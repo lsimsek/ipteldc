@@ -1,0 +1,79 @@
+
+#############################################################################
+# Example filelist file
+#   - Brought to you by your Friendly Neighbourhood Andrew Ross
+#   - See https://shastalists.us.nortel.com/Wiki/bin/view/Siren/Packaging
+#     for support
+#############################################################################
+#
+#   This filelist file is an example filelist to serve as a demo to what
+#   can be done with the packaging. The filelist file defines which elements
+#   should be inluded with your software package.
+#
+#############################################################################
+#
+#   The basics:
+#   1) Each element is a new line in the directory
+#   2) Elements can be...
+#       F - for files
+#       D - for directories
+#       S - for symlinks
+#       H - for hardlinks
+#       (other types will come later)
+#
+#   3) For backup, choose one of...
+#       N - for no USM backups on this file
+#       R - to tell USM to backup this file as a Runtime element
+#       C - to tell USM to backup this file as a Configuration data element
+#       D - to tell USM to backup this file as a Data (generated data) element
+#
+#   4) For the system path, specify where you'd like the file to be placed on the system
+#
+#   5) For the owner, specify which user should own the element on the system
+#
+#   6) For the group, specify which group the element on the system should belong to
+# 
+#   7) For the permissions, specify the chmod mode for the element
+#
+#   8) For the SDE path, 
+#        IF specifying a file, specify the path in the SDE where the file can be found
+#        IF specifying a symlink or hardlink, specify the link name 
+#        (the runtime path is the target for links)
+
+# Rules:
+# ======
+# - No spaces are allowed in file names
+
+###########################################################################################
+# Layout:
+# <Type> <architecture> <Backup> "<system path>" <owner> <group> <permissions> "<SDE path>"
+###########################################################################################
+
+# Example of how to handle a CLI model
+I ALL R "${cli_model_dir}/${key}_${key_version}_cli_model.xml" configadm configadm 755 "${top_dir}/sw_mgmt/demo_pkg/src/USMSampleCLI.xml"
+
+# Example of how to handle a Config model (once it is compiled to a shared library)
+C ALL R "${current_arch_config_model}/libOamConfig29Dm.so.0.1" configadm configadm 755
+S ALL R "./libOamConfig29Dm.so.0.1" configadm configadm 755 "${current_arch_config_model}/libOamConfig29Dm.so.0"
+S ALL R "./libOamConfig29Dm.so.0.1" configadm configadm 755 "${current_arch_config_model}/libOamConfig29Dm.so"
+
+# Example of how to handle a service
+F ALL R "${current_arch_init}/sampleSvc" root root 755 "${top_dir}/sw_mgmt/demo_pkg/src/sampleSvc"
+S ALL R "../init.d/sampleSvc" root root 755 "${current_arch_rc3}/sw_mgmt/demo_pkg/src/sampleSvc"
+
+# Example of an Escape library, you don't need the SDE path, 
+# and it goes in the escapes directory
+# Note: "normal" libraries go into the libs directory instead
+E ALL R "${current_arch_escapes}/libOamUSMSampleGapsEscapes.so.0.1" root root 755
+S ALL R "./libOamUSMSampleGapsEscapes.so.0.1" root root 755 "${current_arch_escapes}/libOamUSMSampleGapsEscapes.so.0"
+S ALL R "./libOamUSMSampleGapsEscapes.so.0.1" root root 755 "${current_arch_escapes}/libOamUSMSampleGapsEscapes.so"
+
+# Example of an executable, you don't need the SDE path
+# pkgtool will look for it in the supplied bin and lib directory 
+F ALL R "${current_arch_bin}/sample" root root 755
+
+# Example of a relative symlink
+# The first path is what you want to point at
+# The second path is the directory and name of the link
+S ALL R "./sample" root root 755 "${current_arch_bin}/sample_link"
+

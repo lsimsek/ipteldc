@@ -1,0 +1,109 @@
+# 
+# This file contains all the settings that are common across all the 
+# setup projects.
+#
+
+# These are used to identify how to classify the trkusage lines while 
+# generating metrics
+ubuild_PRODUCT     = ipteldc
+ubuild_PRODUCT_REL = 1.2.0
+ubuild_CONFIG_DIR = ${USE_SRC_ROOT}/ebuild/ipteldc/ipteldc/trunk/tools/build
+ubuild_BIN_DIR = /opt/tools/wh/dtd/tools/ubuild/1.11
+
+# These can be used to idetify directories where MOTD data can exist.
+# The MOTD directories should be outside of ClearCase.
+ubuild_MOTD_DIR          = /opt/soe/projects/ottcclb/ncglbld/ubuild/motd
+ubuild_OPTIONAL_MOTD_DIR = /opt/soe/projects/ottcclb/ncglbld/ubuild/motd_optional
+
+# The PATH to use for the build (tools warehouse content will be added).
+ubuild_PATH_HEAD = /bin:/usr/bin
+ubuild_PATH_TAIL =
+
+# The autohelp files we use.
+ubuild_AUTOHELP_FILES = /ebuild/ipteldc/ipteldc/trunk/tools/build/common.autohelp 
+
+# Enable (comment out), disable (set to Y), debug (set to print) trkusage.
+#ubuild_TRKUSAGE_DISABLED  ?= print
+
+# Specify the remote build settings.
+#  - with ubuild_REMOTE_POOL we could specify one or more pools 
+#    (ottlbu-linux-1 ottlbu-linux-2), or leave it blank and let
+#    rbuild decide.
+ubuild_REMOTE_POOL ?= 
+ubuild_REMOTE_QUEUE = RHEL5_F.q 
+rbuildPATH = /opt/tools/wh/dtd/tools/rbuild/1.4
+
+
+# This file is used to control the clearmake distributed builds.
+#ubuild_DISTRIBUTED_HOSTS_FILE ?= /opt/corp/projects/metronext/ubuild/distributed_hosts.config
+
+# This config file will allow us to always point to current version 
+# so we can get the current license files, etc.
+#ubuild_VOLATILE_SETTINGS_CONFIG ?= /vob/neptune/build/ubuild/volatile.config@@/main/LATEST
+
+#### NTMK variables ####
+
+# With a new baseline the ntmkbw_NTMK_VERSION variable will be obsolete, and
+# the version from the tools files will be used.
+NTMK_LOCAL_CONFDIR = tools/build/mk
+ntmkbw_PRODUCTID = ipteldc
+ntmkbw_PROD_RELEASE = 1.2.0
+ntmkbw_PRODUCTREL = 1.2.0
+ntmkbw_APP_RELEASE = 1.2.0
+ntmkbw_VSE_RELEASE = 8.0.0
+ntmkbw_LOADSLOCATION = /ebuild/ipteldc/ipteldc12tar/12
+ntmkbw_DEFAULTARCH = i686
+ntmkbw_DEFAULTFAM = intel_c
+ntmkbw_LATESTBUILD   = latest_build
+#ntmkbw_INTSTREAMPATTERN = gvm0*_int 
+#ntmkbw_PVOB = /vob/oam_vse/pvob
+ntmkbw_NCGLVER = 17.0
+USE_APPNAMES = ipteldc
+#ntmkbw_PKGVERSION = 1.0.0
+#ntmkbw_LOADDIRNAME_POSTPROCESSING = $loadDirName = "$loadDirName/ncgl/$blade" if $opts{l} !~ /^latest/
+#ntmkbw_PKGSINDIRNAME_FROMFILE = Y
+#ntmkbw_PKGSINDIRNAME_POSTPROCESSING= '$pkgsInDir = "$pkgsInDir/ncgl/$blade"'
+#NTMK_LOCAL_CONFDIR = loadbuild/ntmk/mk
+NTMK_SENTINEL = tools
+# Variables needed by sbuild
+
+DEFAULT_OBJPATH = ${USE_SRC_ROOT}/ebuild/ipteldc/ipteldc/DOs
+USE_PKGMAPFILE  = ${USE_SRC_ROOT}/euild/ipteldc/ipteldc/trunk/tools/pkgtools/config/packageMapping.list
+USE_NCLMAPFILE  = ${USE_SRC_ROOT}/euild/ipteldc/ipteldc/trunk/tools/pkgtools/config/nclMapping.list
+USE_ESDFILE     = ${USE_SRC_ROOT}/euild/ipteldc/ipteldc/trunk/tools/pkgtools/config/esdlineup.list
+USE_NCLVERSION = V012
+patch_BLADES_CONFIG = ${USE_SRC_ROOT}/ebuild/ipteldc/ipteldc/trunk/tools/build/mk/blades_config
+#### Other variables ####
+
+#LM_PROJECT = Siren
+
+USE_PKGTOOL_STRIP ?= Y
+
+productdef_PRODUCT_CODE = IPTELDC00012
+productdef_PRODUCT_ID = ipteldc
+productdef_PRODUCT_VERSION = 1.2.0
+
+#### Other variables ####
+
+# Establish patching information variables.
+#PATCH_CONTROL = ${USE_SRC_ROOT}/vob/gvm/gvmb/tools/patching/PatchControl
+PATCH_PRODUCT = ipteldc
+PATCH_WRAPPER_LOG ?= NO
+PATCH_WRAPPER_OPTIONS ?=
+PATCH_OUTPUT_DIR ?=
+PATCH_ENVIRONMENT ?=
+BINTAP_BUILD_ENABLED ?= N
+
+## Variables needed by Patch Creation tools
+## Loadbuild team must export these variables
+patch_TARGOBJDIR_PATTERN="_::target::_ncgl_17.0_::family::"
+#patch_NCGLHA_TARGOBJDIR_PATTERN="_::target::_ncgl_17.0_::family::"
+patch_BLADES_CONFIG = ${USE_SRC_ROOT}/ebuild/ipteldc/ipteldc/trunk/tools/build/mk/blades_config
+patch_PKGNAME_SUFFIX = "_IPTELDC"
+patch_LOADBUILD_BASEDIR = ${ntmkbw_LOADSLOCATION}
+patch_NCGLHA_BASELINE_PREFIX="ncgl170"
+patch_VSE_PATCH_TOOLS_PATH ?= "/opt/corp/projects/patchmon/vsetools/vp2"
+patch_CPPAT_PATCH_TOOLS_PATH = "/opt/corp/projects/patchmon/cppat"
+
+NTCADHOME = /opt/tools
+

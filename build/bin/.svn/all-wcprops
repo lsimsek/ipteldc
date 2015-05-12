@@ -1,0 +1,101 @@
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin
+END
+local_setup.mk
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin/local_setup.mk
+END
+getFileIntVer.sh
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/getFileIntVer.sh
+END
+skernb
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/skernb
+END
+local_mkfiletmpl.mk
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin/local_mkfiletmpl.mk
+END
+local_mkfiledefs.mk
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin/local_mkfiledefs.mk
+END
+t2iso
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/t2iso
+END
+path_mapper
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/path_mapper
+END
+stest
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/stest
+END
+utest
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/utest
+END
+local_target.mk
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin/local_target.mk
+END
+create_tarfile
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/create_tarfile
+END
+local_rules.mk
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/ipteldc/!svn/ver/24/trunk/tools/build/bin/local_rules.mk
+END
+prep_vse_build.sh
+K 25
+svn:wc:ra_dav:version-url
+V 64
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/prep_vse_build.sh
+END
+prebuild.mk
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/ipteldc/!svn/ver/23/trunk/tools/build/bin/prebuild.mk
+END
+get_prvldirs.sh
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/get_prvldirs.sh
+END
+getArch
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/ipteldc/!svn/ver/22/trunk/tools/build/bin/getArch
+END

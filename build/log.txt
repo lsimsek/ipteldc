@@ -67,7 +67,7 @@ Parcels to be included:
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_webnms_be_misc_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_webnms_misc_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 The patch was successfully generated. Output is:
-/vob/gvm/gvmb/DOs/ncl/patches/GVMBV030_3.0.0.143808.0.patch
+
 
 Using buildEsd version 8.0.3.
 

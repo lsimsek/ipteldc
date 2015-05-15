@@ -51,7 +51,6 @@ Parcels to be included:
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_classloader_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_genband_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_hbnlib_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
-	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_license_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_nms_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_nms_client_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_conf_intel_c_GVM-3.0.0.143808.0-1.i386.parcel

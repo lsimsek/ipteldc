@@ -6,7 +6,6 @@ NCGL_SYSTEM_ROOT = /vob/gvm/gvmb/DOs/root/gvmb_fam_intel_c
 Original HOME: 
 Flexlmrc HOME set to: /home/vsebld/flexlmrc
 Using Flexlm license: /opt/tools/licenses/wrs_gb
-
 --- build starting on  Wed Sep 17 22:43:32 2014
 
 NCGL_SYSTEM_ROOT = /vob/gvm/gvmb/DOs/root/gvmb_fam_intel_c

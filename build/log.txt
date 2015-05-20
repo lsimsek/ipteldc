@@ -24,7 +24,7 @@ ntmk: Parsing inclusive makefiles ...
 ** Warning: ../../app/common/src has already been included. skipped
 ** Warning: ../../app/dm/data has already been included. skipped
 ** Warning: ../../app/dm/src has already been included. skipped
-ntmk: Done.
+.
 
 
 Creating gvmb TARs 2014-09-17 22:43:43

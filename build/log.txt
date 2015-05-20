@@ -24,7 +24,7 @@ ntmk: Parsing inclusive makefiles ...
 ** Warning: ../../app/common/src has already been included. skipped
 ** Warning: ../../app/dm/data has already been included. skipped
 ** Warning: ../../app/dm/src has already been included. skipped
-ntmk: Done.
+.
 
 
 Creating gvmb TARs 2014-09-17 22:43:43
@@ -65,6 +65,7 @@ Parcels to be included:
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_webnms_misc_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 The patch was successfully generated. Output is:
 
+I added this line
 
 Using buildEsd version 8.0.3.
 

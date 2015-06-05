@@ -25,9 +25,12 @@ ntmk: Parsing inclusive makefiles ...
 ** Warning: ../../app/dm/data has already been included. skipped
 ** Warning: ../../app/dm/src has already been included. skipped
 <<<<<<< HEAD
+<<<<<<< HEAD
 ntmk: Done.
 ------adding first commit------
 =======
+=======
+>>>>>>> 0958b258d32cb4baefcfedbe296dc05aae499e62
 .
 
 >>>>>>> 0958b258d32cb4baefcfedbe296dc05aae499e62

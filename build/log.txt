@@ -6,7 +6,6 @@ NCGL_SYSTEM_ROOT = /vob/gvm/gvmb/DOs/root/gvmb_fam_intel_c
 Original HOME: 
 Flexlmrc HOME set to: /home/vsebld/flexlmrc
 Using Flexlm license: /opt/tools/licenses/wrs_gb
-
 --- build starting on  Wed Sep 17 22:43:32 2014
 
 NCGL_SYSTEM_ROOT = /vob/gvm/gvmb/DOs/root/gvmb_fam_intel_c
@@ -25,8 +24,13 @@ ntmk: Parsing inclusive makefiles ...
 ** Warning: ../../app/common/src has already been included. skipped
 ** Warning: ../../app/dm/data has already been included. skipped
 ** Warning: ../../app/dm/src has already been included. skipped
+<<<<<<< HEAD
 ntmk: Done.
 ------adding first commit------
+=======
+.
+
+>>>>>>> 0958b258d32cb4baefcfedbe296dc05aae499e62
 
 Creating gvmb TARs 2014-09-17 22:43:43
 
@@ -50,8 +54,6 @@ Parcels to be included:
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_adventnet_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_classloader_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_genband_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
-	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_hbnlib_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
-	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_license_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_nms_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_classes_nms_client_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_conf_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
@@ -68,6 +70,7 @@ Parcels to be included:
 	/vob/gvm/gvmb/DOs/ncl/GVMBV030/NCL/GVMBV030/packages/gvm_webnms_misc_intel_c_GVM-3.0.0.143808.0-1.i386.parcel
 The patch was successfully generated. Output is:
 
+I added this line
 
 Using buildEsd version 8.0.3.
 
